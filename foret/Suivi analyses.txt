@@ -1,0 +1,22 @@
+
+1) Répartition de la pression d'abroutissement sur les forêts échantillonnées
+
+ → Calcul des indices de recouvrement et d'abroutissement liés à la placette : DTj, CTj, AMOYj
+ → Distribution des valeurs de ces indices : histogrammes
+ → Répartition spatiale de l'abroutissement : plot de AMOYj sur une carte
+
+ → Modélisation de la pression d'abroutissement selon différentes variables écologiques et paysagères
+	• Exploration des données : homogénéité , normalité
+	• ACP pour vérifier la colinéarité, les relations et les interactions entre variables
+	• GLMM
+
+2) Sélectivité des espèces
+
+ → Calcul des indices de sélectivité : Cij, Sij (indice de sélectivité de Jacob)
+ → Calcul des valeurs moyenne des indices pour chaque espèce et classification selon l'appétence
+
+ → Modélisation de la sélectivité de différentes espèces selon différentes variables
+
+3) Impacts sur la diversité du sous-bois
+
+ → AFC sur le tableau floristique

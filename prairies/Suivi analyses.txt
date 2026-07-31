@@ -1,0 +1,31 @@
+
+1) Variation temporel de la pression d'herbivorie des cervidés sur les prairies
+
+→ Plot de l'évolution des pertes (moyennes et par enclos)
+→ Test de l'effet de l'année sur les pertes (GLMM avec effet fixe des années et effet site aléatoire) ENLEVER LES VALEURS ABERANTES
+
+2) Variation spatiale
+
+→ Visualiser et tester l'effet colinéarité spatiale : différence entre épicentre et périphérie
+	→ Plot carte avec niveau d'abroutissement
+	→ Tests statistiques associés : à voir tester l'autocorélation
+
+→ Modélisation et test des effets de différentes variables (caractéristiques des prairies, paysage, écologie, densité de cervidés)
+
+Préalablement : Récupérer les variables nécessaires
+	→ Rugosité du terrain calculable sur QGIS à partir d'un MNT (Riley et al., 1999)
+	→ Pourcentage de forêt et prairie dans les 100 et 500m : tampon sur QGIS avec BD FORÊT
+	→ Distance forêt : à voir
+	→ Distance à la route la plus proche
+	→ Variables climatiques ?
+	→ Indicateurs qualité des prairies ? valeur nutritionelle à partir du relevé phyto + naturalité ou âge de la prairie (time since renewal) ?
+	→ Construire un indice de densité locale des cervidés : Plan de chasse mais points sur même commune ? Densité de fèces ?
+	→ Indice d'abroutissement de la placette forestière la plus proche
+
+Méthodo inspiré de l'article "An experimental assessment of biomass loss due to red deer (Cervus elaphus L.) grazing on agricultural grass meadows in Norway" (Unsgård et al., 2024)
+
+	→ Tester la colinéarité des variable et sélectionner celles qui sont trop corrélées par le critère de l'AIC
+	→ Plot graphiques GAM avec le package mgcv pour déterminer la nature de la relation entre variable explicative et réponse (identifier les relations non-linéaires)
+	→ LMM avec effet aléatoire du site
+	→ plot des grapgiques de diagnostic à partir des résidus et transformer le modèle si besoin
+	→ sélection des modèles par step (voir script Cricri ou sinon fonction drop1 de lme4)

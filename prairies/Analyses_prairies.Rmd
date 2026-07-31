@@ -1,0 +1,359 @@
+---
+title: "Analyses prairies"
+author: "LAVILLE Gabin"
+date: '`r Sys.Date()`'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, include=FALSE}
+install.packages("readxl", "sf", "ggpplot2", "tidyr", "dplyr", "paletteer", "lme4", "terra", "tidyterra")
+
+library(readxl)
+library(sf)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(paletteer)
+library(lme4)
+library(terra)
+library(tidyterra)
+
+setwd("D:/ingé/3A/Stage/Cervides_Aubrac/Analyse/prairies")
+```
+
+
+```{r data importation}
+info_placettes_encl_excl <- read_excel(path = "data/Releves_prairies_biomasse_et_phyto.xlsx", sheet = 1)
+perte_biomasse_encl_excl <- read_excel(path = "data/Releves_prairies_biomasse_et_phyto.xlsx", sheet = 2)
+
+pnr_aubrac <- st_read("data/vectors/PNR_AUBRAC/PNR_AUBRAC_2026.shp")
+
+mnt_25 <- rast("data/rastors/MNT_RA_107_2010.tif")
+```
+
+```{r conversions}
+info_placettes_encl_excl$Id_EE <- as.factor(info_placettes_encl_excl$Id_EE)
+info_placettes_encl_excl$pose_2026 <- as.factor(info_placettes_encl_excl$pose_2026)
+
+perte_biomasse_encl_excl$Id_EE <- as.factor(perte_biomasse_encl_excl$Id_EE)
+perte_biomasse_encl_excl$date_pose <- as.Date(perte_biomasse_encl_excl$date_pose) #erreur à corriger
+perte_biomasse_encl_excl$date_releve <- as.Date(perte_biomasse_encl_excl$date_releve)
+```
+
+
+```{r data editing}
+info_placettes_encl_excl_sf <- st_as_sf(info_placettes_encl_excl[!is.na(info_placettes_encl_excl$XL93_approx), ],
+                                        coords = c("XL93_approx", "YL93_approx"),
+                                        crs = 2154
+        )
+
+#jointure de la table info à la table des pertes
+perte_biomasse_encl_excl_sf <- left_join(info_placettes_encl_excl_sf, perte_biomasse_encl_excl, by = 'Id_EE')
+```
+
+Localisation des points
+
+```{r}
+ggplot(data = info_placettes_encl_excl_sf) +
+  geom_sf(data = pnr_aubrac, fill = "white", color = "black", size = 1) +
+  geom_sf()
+```
+
+### Analyses
+
+## Statistiques descriptives
+
+#Visualisation des pertes par enclos
+
+```{r}
+ggplot(data = perte_biomasse_encl_excl,
+       aes(x = reorder(Id_EE, -pertes, FUN = median), y = pertes)) +
+  geom_boxplot() +
+  geom_jitter(width = 0.2) +
+  theme_minimal()
+
+#retrait des outliers ?
+```
+
+Distribution des pertes
+
+```{r}
+ggplot(data = perte_biomasse_encl_excl,
+       aes(x = pertes)) +
+  geom_histogram() +
+  scale_x_continuous(breaks = seq(-0.5, 1, by = 0.1)) +
+  theme_minimal()
+
+ggplot(data = perte_biomasse_encl_excl,
+       aes(x = pertes)) +
+  geom_density() +
+  scale_x_continuous(breaks = seq(-0.5, 1, by = 0.1)) +
+  theme_minimal()
+
+#test de Shapiro pour tester la normalité de la distribution des pertes
+
+shapiro.test(perte_biomasse_encl_excl$pertes)
+```
+
+La distribution peut être considérée comme normale.
+
+#Différences enclos-exclos
+
+```{r}
+ggplot(data = perte_biomasse_encl_excl) +
+  geom_boxplot(aes(x = "Enclos", y = mf_tot_enclos), fill = "darkgreen") +
+  geom_boxplot(aes(x = "Exclos", y = mf_tot_exclos), fill = "brown") +
+  labs(x = "", y = "Biomasse") +
+  theme_minimal()
+
+
+ggplot(data = perte_biomasse_encl_excl) +
+  geom_density(aes(x = mf_tot_enclos, colour = "Enclos")) +
+  geom_density(aes(x = mf_tot_exclos, colour = "Exclos")) +
+  scale_colour_manual(
+    values = c("Enclos" = "darkgreen", "Exclos" = "brown"),
+    name = ""
+  ) +
+  labs(x = "") +
+  theme_minimal()
+
+#test de Shapiro pour tester la normalité de la distribution des biomasses
+shapiro.test(perte_biomasse_encl_excl$mf_tot_enclos)
+shapiro.test(perte_biomasse_encl_excl$mf_tot_exclos) #les distributions sont normales
+
+
+#Two sample t-test pour tester les différences de distribution entre enclos et exclos
+t.test(perte_biomasse_encl_excl$mf_tot_enclos,
+       perte_biomasse_encl_excl$mf_tot_exclos,
+       paired = TRUE)
+
+```
+Les différences de moyennes entre enclos et exclos sont significatives.
+
+
+##Effets temporels
+
+#Comparaison des pertes en biomasses selon les différentes années
+
+Évolution des pertes
+
+```{r graph, echo=FALSE}
+ggplot(perte_biomasse_encl_excl,
+       aes(x = annee, y = 100*pertes, group = Id_EE, color = Id_EE)) +
+  geom_line() +
+  geom_point() +
+  labs(x = "Année", y = "Pertes en biomasse (%)", title = "Évolution des des pertes fourragères attribuées aux cervidés par enclos-exclos") +
+  theme_minimal()
+```
+
+Moyenne des pertes par année
+
+```{r}
+ggplot(perte_biomasse_encl_excl,
+       aes(x = as.factor(annee), y = 100*pertes)) +
+  geom_boxplot() +
+  labs(x = "Année", y = "Pertes en biomasse (%)", title = "Évolution des moyennes annuelles des pertes fourragères attribuées aux cervidés") +
+  theme_minimal()
+  
+#à saint-chély
+ggplot(perte_biomasse_encl_excl_sf[perte_biomasse_encl_excl_sf$commune == "St Chély d'Aubrac",],
+       aes(x = as.factor(annee), y = 100*pertes)) +
+  geom_boxplot() +
+  labs(x = "Année", y = "Pertes en biomasse (%)", title = "Évolution des pertes à Saint-Chély d'Aubrac") +
+  theme_minimal()
+```
+
+Test de l'effet de l'année sur les pertes
+
+```{r}
+#modèle linéaire mixte
+lmm1 <- 
+  lmer(pertes ~ as.factor(annee) + (1 | Id_EE), #on attribue l'effet des sites à un effet aléatoire pour l'instant
+           data = perte_biomasse_encl_excl,
+           REML = FALSE)
+summary(lmm1)
+```
+
+Comparaison des pertes en biomasse avant et après l'augmentation des plans de chasse (2024)
+
+```{r}
+perte_biomasse_encl_excl_pdc <- perte_biomasse_encl_excl |>
+  mutate(periode_pdc = factor(
+    ifelse(annee < 2024, "Avant", "Après"),
+    levels = c("Avant", "Après")
+  ))
+
+# comparaison des pertes pour les deux périodes
+ggplot(data = perte_biomasse_encl_excl_pdc,
+       aes(x = periode_pdc, y = 100*pertes)) +
+  geom_boxplot() +
+  labs(x = "", y = "Pertes en biomasse (%)", title = "Moyenne des pertes en biomasse avant et après l'augmentation des prélévements (2024)") +
+  theme_minimal()
+
+# verification de la normalité dans chaque groupe
+ggplot(data = perte_biomasse_encl_excl_pdc,
+       aes(x = pertes, group = periode_pdc, color = periode_pdc)) +
+  geom_density() +
+  theme_minimal() 
+
+shapiro.test(perte_biomasse_encl_excl_pdc$pertes[perte_biomasse_encl_excl_pdc$periode_pdc == "Avant"])
+shapiro.test(perte_biomasse_encl_excl_pdc$pertes[perte_biomasse_encl_excl_pdc$periode_pdc == "Après"])
+#La distribution des deux groupes peut être considérée comme normale
+
+
+# two sample t-test
+t.test(pertes ~ periode_pdc, data = perte_biomasse_encl_excl_pdc)
+```
+On ne peut pas rejeter H0, les distributions des groupes ne sont pas significativement différentes.
+On ne peut cependant pas encore faire de conclusion sur l'effet de l'augmentation des plans de chasse.
+
+
+
+# Évolution des productivité
+
+```{r}
+ggplot(data = perte_biomasse_encl_excl) +
+  geom_point(aes(x = annee, y = mf_tot_enclos, colour = "Enclos")) +
+  geom_point(aes(x = annee, y = mf_tot_exclos, colour = "Exclos")) +
+  scale_colour_manual(
+    values = c("Enclos" = "darkgreen", "Exclos" = "brown"),
+    name = ""
+  ) +
+  labs(x = "", y = "Biomasse (g/m²)") +
+  theme_minimal()
+
+#moyenne des productivités par année
+ggplot(data = perte_biomasse_encl_excl) +
+  geom_boxplot(aes(x = as.factor(annee), y = mf_tot_enclos, colour = "Enclos"),
+               position = position_nudge(x = -0.2), width = 0.35) +
+  geom_boxplot(aes(x = as.factor(annee), y = mf_tot_exclos, colour = "Exclos"),
+               position = position_nudge(x = 0.2), width = 0.35) +
+  scale_colour_manual(
+    values = c("Enclos" = "darkgreen", "Exclos" = "brown"),
+    name = ""
+  ) +
+  labs(x = "", y = "Biomasse (g/m²)") +
+  theme_minimal()
+
+#test statistique pour les productivités : on veut tester l'effet des années sur les productivités en différenciant le traitement (enclos ou exclos)
+
+#on doit mettre les données en format long
+perte_biomasse_encl_excl_long <- perte_biomasse_encl_excl %>%
+  pivot_longer(cols = c(mf_tot_enclos, mf_tot_exclos),
+               names_to = "traitement",
+               values_to = "biomasse") %>%
+  mutate(traitement = recode(traitement,
+                             "mf_tot_enclos" = "Enclos",
+                             "mf_tot_exclos" = "Exclos"))
+
+#modèle linéaire mixte
+lmm3 <- 
+  lmer(biomasse ~ as.factor(annee) * traitement + (1 | Id_EE), #on attribue l'effet des sites à un effet aléatoire pour l'instant
+           data = perte_biomasse_encl_excl_long,
+           REML = FALSE)
+summary(lmm3)
+```
+
+##Analyses spatiales
+
+# Répartition spatiale des pertes en 2025
+
+```{r}
+perte_biomasse_encl_excl_sf_2025 <- perte_biomasse_encl_excl_sf[perte_biomasse_encl_excl_sf$annee == '2025',]
+
+ggplot(data = perte_biomasse_encl_excl_sf_2025) +
+  geom_spatraster(data = mnt_25) +
+  scale_fill_hypso_tint_c() +  # palette relief
+  geom_sf(data = pnr_aubrac, fill = NA, color = "black", size = 1) +
+  geom_sf(aes(colour = 100*pertes), size = 2) +
+  scale_colour_gradient(
+    low = "green",
+    high = "red",
+    name = "Pertes (%)"
+  ) +
+  theme_minimal()
+
+#zoom sur l'emprise des points
+bbox <- st_bbox(perte_biomasse_encl_excl_sf_2025)
+marge <- 0.1 
+
+mnt_crop <- crop(
+  mnt_25,
+  ext(bbox["xmin"] - marge,
+      bbox["xmax"] + marge,
+      bbox["ymin"] - marge,
+      bbox["ymax"] + marge)
+)
+
+ggplot() +
+  geom_spatraster(data = mnt_crop) +
+  scale_fill_gradient(
+    low  = "white",
+    high = "grey40",
+    name = "Altitude (m)",
+    na.value = "white"
+  ) +
+  geom_sf(
+    data = perte_biomasse_encl_excl_sf_2025,
+    aes(colour = 100 * pertes),
+    size = 2
+  ) +
+  scale_colour_gradient(
+    low  = "green",
+    high = "red",
+    name = "Pertes (%)"
+  ) +
+  coord_sf(
+    xlim = c(bbox["xmin"] - marge, bbox["xmax"] + marge),
+    ylim = c(bbox["ymin"] - marge, bbox["ymax"] + marge),
+    expand = FALSE
+  ) +
+  theme_minimal()
+```
+
+
+
+## Analyses multivariées
+
+#Représentation des pertes selon la productivité
+
+```{r}
+ggplot(perte_biomasse_encl_excl,
+       aes(x = mf_tot_enclos, y = pertes)) +
+  geom_point() +
+  theme_minimal()
+
+ggplot(perte_biomasse_encl_excl,
+       aes(x = mf_tot_exclos, y = pertes)) +
+  geom_point() +
+  theme_minimal()
+
+## regression linéaire simple
+# normalisation des biomasses
+cols_a_standardiser <- c("mf_tot_enclos", "pertes", "mf_tot_exclos")
+
+perte_biomasse_encl_excl_scaled <- perte_biomasse_encl_excl
+
+perte_biomasse_encl_excl_scaled[cols_a_standardiser] <- scale(
+  perte_biomasse_encl_excl[cols_a_standardiser]
+)
+
+#modele et test
+lm1 <- lm(data = perte_biomasse_encl_excl, pertes ~ mf_tot_enclos)
+summary(lm1)
+
+lm2 <- lm(data = perte_biomasse_encl_excl, pertes ~ mf_tot_exclos)
+summary(lm2)
+
+cor.test(perte_biomasse_encl_excl$pertes,
+         perte_biomasse_encl_excl$mf_tot_enclos)
+
+cor.test(perte_biomasse_encl_excl$pertes,
+         perte_biomasse_encl_excl$mf_tot_exclos)
+```
+Les prairies les plus productives ne semblent pas être les plus apétentes.
+

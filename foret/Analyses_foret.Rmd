@@ -1,0 +1,789 @@
+---
+title: "Analyses_foret"
+author: "LAVILLE Gabin"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, include=FALSE}
+install.packages("ggpplot2", "tidyr", "dplyr", "readxl", "sf", "cowplot", "corrplot",
+                 "FactoMineR", "factoextra", "spdep", "tmap")
+
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(readxl)
+library(sf)
+library(cowplot)
+library(betareg)
+library(corrplot)
+library(FactoMineR)
+library(factoextra)
+library(spdep)
+library(tmap)
+```
+
+```{r set working directory, include=FALSE}
+setwd("D:/ingé/3A/Stage/Cervides_Aubrac/Analyse/foret")
+```
+
+```{r data importation}
+info_placette <- read_excel(path = "data/abroutissement_foret_2026.xlsx", sheet = 2)
+abroutissement <- read_excel(path = "data/abroutissement_foret_2026.xlsx", sheet = 3)
+phyto <- read_excel(path = "data/abroutissement_foret_2026.xlsx", sheet = 5)
+
+pnr_aubrac <- st_read("data/vectors/PNR_AUBRAC/PNR_AUBRAC_2026.shp")
+
+```
+
+```{r conversions}
+info_placette$ID <- as.factor(info_placette$ID)
+
+info_placette$DATE <- as.Date(info_placette$DATE)
+info_placette$TOPO <- as.factor(info_placette$TOPO)
+info_placette$STC <- as.factor(info_placette$STC)
+
+#remplacement des modalités par les médianes de classes
+info_placette$PENTE <- case_when(
+  info_placette$PENTE == "1"  ~ 0,
+  info_placette$PENTE == "2" ~ 2.5,
+  info_placette$PENTE == "3" ~ 7.5,
+  info_placette$PENTE == "4" ~ 20,
+  info_placette$PENTE == "5" ~ 35,
+  TRUE ~ NA_real_
+)
+
+correspondance <- c("0" = "0", "+" = "0.5", "1" = "2.5", "2" = "12.5", 
+                     "3" = "37.5", "4" = "62.5", "5" = "87.5")
+
+info_placette[12:14] <- lapply(info_placette[12:14], function(x) {
+  correspondance[as.character(x)]
+})
+info_placette[12:14] <- lapply(info_placette[12:14], as.numeric)
+
+info_placette$POSI_SP1 <- as.factor(info_placette$POSI_SP1)
+info_placette$POSI_SP2 <- as.factor(info_placette$POSI_SP2)
+info_placette$POSI_SP3 <- as.factor(info_placette$POSI_SP3)
+info_placette$PPL <- as.factor(info_placette$PPL)
+info_placette$UNI <- as.factor(info_placette$UNI)
+
+info_placette[, 28:39][is.na(info_placette[, 28:39])] <- 0
+
+colnames(abroutissement) <- c("IDP","ID_SP", "ESPECE", "TR", "TA")
+
+#ajout d'une variable catégorielle représentative de la fréquentation de la placette par les cervidés
+info_placette <- info_placette %>%
+  mutate(
+    NB_FECES = TRAN_NS_FECES + TRAN_EO_FECES,
+    FREQ_CERF = factor(
+      case_when(
+        NB_FECES == 0 ~ "Fréquentation faible",
+        NB_FECES %in% c(1, 2) ~ "Fréquentation moyenne",
+        NB_FECES >= 3 ~ "Fréquentation forte"
+      ),
+      levels = c("Fréquentation faible", "Fréquentation moyenne", "Fréquentation forte")
+    )
+  )
+
+#conversion de l'exposition en deux composantes continues 
+info_placette <- info_placette %>%
+  mutate(
+    EXPO_rad = EXPO * pi / 180,
+    EXPO_NS = cos(EXPO_rad),   # "nordicité" : +1 = plein nord, -1 = plein sud
+    EXPO_EO = sin(EXPO_rad)    # "orientalité" : +1 = plein est, -1 = plein ouest
+  )
+
+#remplacement des modalités par les médianes de classes
+
+abroutissement <- abroutissement %>%
+  mutate(TR = case_when(
+    TR == 1 ~ 0.5,
+    TR == 2 ~ 3,
+    TR == 3 ~ 12.5,
+    TR == 4 ~ 35,
+    TR == 5 ~ 62.5,
+    TR == 6 ~ 87.5,
+    TRUE ~ NA_real_   # valeurs non prévues -> NA
+  ))
+
+abroutissement <- abroutissement %>%
+  mutate(TA = case_when(
+    TA == "O" ~ 0.5,
+    TA == "A" ~ 3,
+    TA == "B" ~ 12.5,
+    TA == "C" ~ 35,
+    TA == "D" ~ 62.5,
+    TA == "E" ~ 87.5,
+    TRUE ~ NA_real_   # valeurs non prévues -> NA
+  ))
+
+correspondance <- c("0" = "0", "0.5" = "0.5", "1" = "2.5", "2" = "12.5", 
+                     "3" = "37.5", "4" = "62.5", "5" = "87.5")
+phyto[, -1] <- lapply(phyto[, -1], function(x) {
+  correspondance[as.character(x)]
+})
+phyto[, -1] <- lapply(phyto[, -1], as.numeric)
+```
+
+```{r conversion to simple feature}
+info_placette_sf <- st_as_sf(info_placette, coords = c("X_L93", "Y_L93"), crs = 2154)
+```
+
+#Localisation des placettes de relevés forestiers
+
+```{r}
+ggplot(data = info_placette_sf) +
+  geom_sf(data = pnr_aubrac, fill = "white", color = "black", size = 0.5) +
+  geom_sf()
+```
+
+##Abroutissement moyen
+
+#Calcul des indices de recouvrement et de consommation pour chaque placette
+
+```{r}
+data <- abroutissement
+
+aldous_indices <- function (TR,
+                            TA = NULL,
+                            index = "DTj") {
+  if(any(index == "SRj" | "SRj" %in% index)) {
+    SRj <- length(TR)
+  }
+
+  if (any(index == "DTj" | "DTj" %in% index)) {
+    DTj <- sum(TR, na.rm = TRUE)
+  }
+  if (any(index == "TAj" | "TAj" %in% index)) {
+    TAj <- mean(TA, na.rm = TRUE)
+  }
+  if(any(index == "CTj" | "CTj" %in% index)) {
+    CTj <- sum(TA * TR, na.rm = TRUE) / 100
+  }
+  if(any(index == "AMOYj" | "AMOYj" %in% index)) {
+    AMOYj <-
+      sum(TA * TR, na.rm = TRUE) / sum(TR, na.rm = TRUE)
+  }
+  
+  if (!is.null(TR) & any(is.na(TR))) {
+    warning("Your data on forage availability contains missing values, NA. The output is probably not correct, you should consider omitting the missing values.")
+  }
+  if (!is.null(TA) & any(is.na(TA))) {
+    warning("Your data on forage use contains missing values, NA.The output is probably not correct, you should consider omitting the missing values.")
+  }
+  Indices_abroutissement <- c("SRj", "DTj", "TAj", "CTj", "AMOYj")
+  myIndex <- unlist(mget(Indices_abroutissement[Indices_abroutissement %in% objects()]))
+  return(myIndex)
+}
+
+myIdList <- as.character(unique(data$ID_SP))
+
+myIndexList <- c("SRj", "DTj", "TAj", "CTj", "AMOYj")
+
+Indices_abroutissement <- lapply(myIdList, function(x) {
+    TR <- data$TR[data$ID_SP == x]
+    TA <- data$TA[data$ID_SP == x]
+    aldous_indices(TR, TA, index = myIndexList)
+  })
+
+Indices_abroutissement <- as.data.frame(do.call(rbind, Indices_abroutissement))
+Indices_abroutissement$name <- myIdList 
+
+Indices_abroutissement$id <- sub("_.*", "", Indices_abroutissement$name)
+
+Indices_abroutissement_placette <- aggregate(cbind(SRj, DTj, TAj, CTj, AMOYj) ~ id,
+                          data = Indices_abroutissement, mean, na.rm = TRUE)
+
+#jointure avec le tableau de données
+info_placette <- 
+  left_join(info_placette, Indices_abroutissement_placette, by = c("ID" = "id"))
+
+info_placette_sf <- st_as_sf(info_placette, coords = c("X_L93", "Y_L93"), crs = 2154)
+```
+
+#Visualisation des données sur l'abroutissement des placettes
+```{r}
+summary(Indices_abroutissement_placette[2:5])
+
+p1 <- ggplot(Indices_abroutissement_placette, aes(x = SRj)) +
+  geom_histogram() +
+  labs(y = "")
+
+p2 <- ggplot(Indices_abroutissement_placette, aes(x = DTj)) +
+  geom_histogram() +
+  labs(y = "Nombre de placettes")
+
+p3 <- ggplot(Indices_abroutissement_placette, aes(x = AMOYj)) +
+  geom_histogram() +
+  labs(y = "")
+
+plot_grid(p1, p2, p3, ncol = 1)
+```
+
+#Répartition de la pression d'abroutissement
+```{r}
+ggplot() +
+  geom_sf(data = pnr_aubrac, fill = "white", color = "black", size = 0.5) +
+  geom_sf(data = info_placette_sf, aes(color = AMOYj)) +
+  scale_color_gradientn(
+    colors = c('green', 'yellow', 'red'),
+    values = scales::rescale(c(min(info_placette_sf$AMOYj, na.rm = TRUE),
+                                median(info_placette_sf$AMOYj, na.rm = TRUE),
+                                max(info_placette_sf$AMOYj, na.rm = TRUE))),
+    na.value = 'white',
+    name = "Abroutissement moyen (%)"
+  )
+```
+
+# Test de l'autocorrélation spatiale avec l'indice de Moran
+
+```{r}
+#méthodo suivi : https://mgimond.github.io/Spatial/spatial-autocorrelation-in-r.html#app8_4
+
+info_placette_sf <- st_as_sf(info_placette_aldous, coords = c("X_L93", "Y_L93"), crs = 2154)
+
+#définition des voisins
+seuil_distance = 1000 #à revoir
+coords <- st_coordinates(info_placette_sf)
+neib <- dnearneigh(coords, d1 = 0, d2 = seuil_distance)
+
+#assignation des poids
+lw <- nb2listw(neib, style="W", zero.policy = TRUE)
+
+#ajout du lag spatiale = moyenne pondérée des valeurs d'abroutissement voisines 
+info_placette_sf$lag <- lag.listw(lw, info_placette_sf$AMOYj)
+
+#remplacement des valeurs ayant un lag nul par des NA
+info_placette_sf$nb_voisins <- card(neib)
+sum(info_placette_sf$nb_voisins == 0)
+info_placette_sf$lag[info_placette_sf$nb_voisins == 0] <- NA
+
+#modèle de regression
+M <- lm(lag ~ AMOYj, info_placette_sf)
+
+#génération du scatterplot de Moran
+plot(lag ~ AMOYj, data = info_placette_sf, pch = 21, asp = 1, las = 1, 
+     col = "grey40", bg = "grey80",
+     xlim = c(0, 100), ylim = c(0, 100))
+abline(M, col = "blue")
+abline(v = mean(info_placette_sf$AMOYj, na.rm = TRUE), lty = 3, col = "grey80")
+abline(h = mean(info_placette_sf$lag, na.rm = TRUE), lty = 3, col = "grey80")
+
+#calcul du coefficient de Moran
+moran(info_placette_sf$AMOYj, listw = lw, n = length(neib), S0 = Szero(lw))
+
+#test de la significativté statistique du coefficient de Moran
+MC <- moran.mc(info_placette_sf$AMOYj, lw, nsim = 999) #test par permutation aléatoire des valeurs de AMOYj répétée 999 fois
+MC
+plot(MC, main="", las=1)
+
+```
+
+```{r}
+#avec les k plus proches voisins
+
+info_placette_sf <- st_as_sf(info_placette_aldous, coords = c("X_L93", "Y_L93"), crs = 2154)
+
+k_voisins = 4
+knea = knearneigh(info_placette_sf, k_voisins)
+neib <- knn2nb(knea)
+
+lw <- nb2listw(neib, style="W")
+
+info_placette_sf$lag <- lag.listw(lw, info_placette_sf$AMOYj)
+
+M <- lm(lag ~ AMOYj, info_placette_sf)
+
+plot(lag ~ AMOYj, data = info_placette_sf, pch = 21, asp = 1, las = 1, 
+     col = "grey40", bg = "grey80",
+     xlim = c(0, 100), ylim = c(0, 100))
+abline(M, col = "blue")
+abline(v = mean(info_placette_sf$AMOYj, na.rm = TRUE), lty = 3, col = "grey80")
+abline(h = mean(info_placette_sf$lag, na.rm = TRUE), lty = 3, col = "grey80")
+
+moran(info_placette_sf$AMOYj, listw = lw, n = length(neib), S0 = Szero(lw))
+
+MC <- moran.mc(info_placette_sf$AMOYj, lw, nsim = 999)
+MC
+plot(MC, main="", las=1)
+
+
+```
+
+Il existe une autocorrélation spatiale positive statistiquement significative pour l'abroutissement moyen.
+
+Nous allons maintenant modéliser les indicateurs locaux de l'indice de Moran afin d'identifier des clusters.
+
+```{r}
+#analyse du Local Moran's I
+MCj <- localmoran_perm(info_placette_sf$AMOYj, lw, nsim = 9999)
+MCj.df <- as.data.frame(MCj)
+
+#ajout des pseudo p-values à info_placette_sf
+info_placette_sf$p  <- MCj.df$`Pr(folded) Sim`
+
+#génération de la carte des pseudo p-values
+pal1 <- c("#DE2D26","#FC9272", "#FEE0D2", "grey90")
+
+ggplot() +
+  geom_sf(data = pnr_aubrac, fill = "white", color = "black", size = 0.5) +
+  geom_sf(data = info_placette_sf, 
+          aes(color = cut(p, 
+                           breaks = c(0, 0.001, 0.01, 0.05, 0.5),
+                           include.lowest = TRUE)), 
+          size = 2) +
+  scale_color_manual(values = pal1, name = "p-value", drop = FALSE) +
+  theme_void(base_size = 12) +
+  theme(
+    legend.position = "right",
+    legend.text = element_text(size = 8)
+  )
+
+#mapping des clusters significatifs
+info_placette_sf$Ij <- hotspot(MCj, Prname="Pr(folded) Sim", cutoff = 0.05, p.adjust = "none")
+
+# Replace NA with ">0.05". This requires that the Ii factor be re-leveled
+info_placette_sf$Ij <- factor(info_placette_sf$Ij, levels=c("High-High","Low-Low", "Low-High", "High-Low", ">0.05"))
+info_placette_sf$Ij[is.na(info_placette_sf$Ij)] <- ">0.05"
+
+#hotspots et coldspots
+pal2 <- c( "red", "green", "orange", "yellow","grey")
+
+ggplot() +
+  geom_sf(data = pnr_aubrac, fill = "white", color = "black", size = 0.5) +
+  geom_sf(data = info_placette_sf, 
+          aes(color = Ij), 
+          size = 2) +
+  scale_color_manual(values = pal2, name = "Ij", drop = FALSE) +
+  theme_void(base_size = 12) +
+  theme(
+    legend.position = "right",
+    legend.text = element_text(size = 8)
+  )
+
+```
+On peut identifier une zone particulièrement abroutie ainsi que deux zones faiblement touchées.
+
+
+##Préférence des espèces
+
+# Calcul des indices d'abroutissement pour les espèces
+
+```{r}
+abroutissement$CT <- abroutissement$TR * abroutissement$TA / 100
+
+Indices_abroutissement_pl_esp <- abroutissement %>%
+  left_join(Indices_abroutissement[1:6], by = c("ID_SP" = "name"))
+
+# Indices_abroutissement_pl_esp <- Indices_abroutissement_pl_esp %>%
+#   filter(DTj <= 100)
+
+#calcul de l'indice de sélectivité de Jacob (d'après Boulanger et al, 2009)
+Indices_abroutissement_pl_esp <- Indices_abroutissement_pl_esp %>%
+  mutate(Aij = TR / DTj, #proportion de l'espèce i dans le plot j
+         RCij = TR * TA / (100 * CTj), #contribution de l'espèce i à l'abroutissement total de la placette j (= place dans le régime alimentaire ?)
+         Sij = (RCij - Aij) / (RCij + Aij - 2*(RCij*Aij)) #indice de sélectivité de Jacob
+         )
+
+#regroupement par placette
+Indices_abroutissement_pl_esp <- Indices_abroutissement_pl_esp %>%
+  group_by(IDP, ESPECE) %>%
+  summarise(
+    TRij = mean(TR, na.rm = TRUE),
+    TAij = mean(TA, na.rom = TRUE),
+    CTij = mean(CT, na.rm = TRUE),
+    Aij = mean(Aij, na.rm = TRUE),
+    RCij = mean(RCij, na.rm = TRUE),
+    Sij = mean(Sij, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+#retrait des données n'ayant pas de valeur pour Si, càd Aij = 1 et RCij = 1 donc si une seule espèce est présente
+Indices_abroutissement_pl_esp <- Indices_abroutissement_pl_esp %>%
+  filter(!is.na(Sij))
+
+#filtrage pour retirer les espèces rares et les valeurs de Sij dépassant les bornes [-1:1]
+seuil_filtre = 10
+
+Indices_abroutissement_pl_esp <- Indices_abroutissement_pl_esp %>%
+  group_by(ESPECE) %>%
+  filter(n() >= seuil_filtre
+         # ,Sij <= 1 & Sij >= -1
+         ) %>%
+  ungroup()
+
+
+#tri du tableau pour ne garder que les placettes des boraldes
+Indices_abroutissement_pl_esp_boraldes <- Indices_abroutissement_pl_esp %>%
+  left_join(info_placette %>% select(ID, ZONE), by = c("IDP" = "ID"))
+
+Indices_abroutissement_pl_esp_boraldes <- Indices_abroutissement_pl_esp_boraldes %>%
+  filter(ZONE == 'BORALDES')
+
+#tableau des indices d'abroutissement moyens des espèces
+resumer_indices_esp <- function(df) {
+  df %>%
+    group_by(ESPECE) %>%
+    summarise(
+      n = n(),
+      TRi = mean(TRij, na.rm = TRUE),
+      TAi = mean(TAij, na.rm = TRUE),
+      CTi = mean(CTij, na.rm = TRUE),
+      RCi = mean(RCij, na.rm = TRUE),
+      Si = mean(Sij, na.rm = TRUE),
+      sd_Si = sd(Sij, na.rm = TRUE),
+      se_Si = sd_Si / sqrt(n),
+      .groups = "drop"
+    )
+}
+
+Indices_abroutissement_esp <- resumer_indices_esp(Indices_abroutissement_pl_esp)
+Indices_abroutissement_esp_boraldes <- resumer_indices_esp(Indices_abroutissement_pl_esp_boraldes)
+
+```
+
+#Visualisation des résultats pour l'appétence des espèces
+
+```{r}
+ggplot(data = Indices_abroutissement_esp,
+       aes(x = reorder(ESPECE, -Si), y = Si)) +
+  geom_col() +
+  geom_errorbar(aes(ymin = Si - se_Si, ymax = Si + se_Si), width = 0.2, color = "grey30") +
+  geom_text(aes(label = paste0("n=", n)), vjust = -0.5, size = 3.5, color = "grey20") +
+  labs(
+    x = NULL,
+    y = "Indice de sélectivité de Jacob"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, face = "italic"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank()
+  )
+
+#test de la significativité des différences entre espèces
+mod = lm(Sij ~ ESPECE, data = Indices_abroutissement_pl_esp)
+par(mfrow=c(2,2))
+plot(mod)
+summary(mod)
+
+#regression beta car la variable réponse est bornée
+temp <- Indices_abroutissement_pl_esp %>%
+  mutate(Sij_rescaled = (Sij + 1) / 2)  # [-1,1] -> [0,1]
+
+modele_beta <- betareg(Sij_rescaled ~ ESPECE, data = temp)
+summary(modele_beta)
+```
+
+
+#Ajout des variables liées à la végétation dans le tableau de données
+
+```{r}
+## Ajout des recouvrements d'espèces ligneuses appétentes
+especes_cibles <- c(
+  "Vaccinium myrtillus",
+  "Rubus fruticosus",
+  "Ilex aquifolium"
+  )
+
+tableau_TRij <- Indices_abroutissement_pl_esp %>%
+  filter(ESPECE %in% especes_cibles) %>%
+  select(IDP, ESPECE, TRij) %>%
+  pivot_wider(
+    names_from = ESPECE,
+    values_from = TRij,
+    values_fill = 0        # placette sans l'espece -> TRij = 0
+  ) %>%
+  rename(
+    REC_IL_AQ = `Ilex aquifolium`,
+    REC_RU_FR = `Rubus fruticosus`,
+    REC_VA_MY = `Vaccinium myrtillus`
+  )
+
+
+
+info_placette <- 
+  left_join(info_placette, tableau_TRij, by = c("ID" = "IDP")) %>%
+  mutate(across(c(REC_IL_AQ, REC_RU_FR, REC_VA_MY), ~ replace_na(.x, 0)))
+
+```
+
+
+##Effet des variables écologiques et paysagères sur la pression d'herbivorie
+
+#Vérifications sur la variable réponse : AMOYj
+
+```{r}
+info_placette_aldous <- info_placette %>%
+  filter(!is.na(info_placette$AMOYj))
+
+hist(info_placette_aldous$AMOYj)
+shapiro.test(info_placette_aldous$AMOYj) #normalité non verifiée
+```
+
+#Relations entre les variables environnementales et l'abroutissement moyen
+
+```{r}
+#fréquentation par les cervidés
+ggplot(data = info_placette_aldous,
+       aes(x = FREQ_CERF, y = AMOYj)) +
+  geom_boxplot() +
+  scale_x_discrete(labels = c("Faible", "Moyenne", "Forte")) +
+  labs(x = "Fréquentation par les cervidés",
+       y = "Abroutissement moyen (%)") +
+  theme_minimal()
+
+cor(info_placette_aldous$AMOYj,
+    info_placette_aldous$NB_FECES,)
+
+modele_feces_abrout <- lm(data = info_placette_aldous, AMOYj ~ NB_FECES)
+summary(modele_feces_abrout)
+
+modele_freq_abrout <- lm(data = info_placette_aldous, AMOYj ~ FREQ_CERF)
+summary(modele_freq_abrout)
+
+
+#altitude
+cor(info_placette_aldous$ALTI, info_placette_aldous$AMOYj)
+
+ggplot(data = info_placette_aldous,
+       aes(x = ALTI, y = AMOYj)) +
+  geom_point() +
+  labs(x = "Altitude (m)",
+       y = "Abroutissement moyen (%)") +
+  theme_minimal()
+
+cor.test(info_placette_aldous$ALTI, info_placette_aldous$AMOYj, method = "spearman")
+
+#type de peuplement
+ggplot(data = info_placette_aldous %>%
+         group_by(PPL) %>%
+         filter(n() >= 10),
+       aes(x = PPL, y = AMOYj)) +
+  geom_boxplot() +
+  # scale_x_discrete(labels = c("Faible", "Moyenne", "Forte")) +
+  labs(x = "Type de peuplement",
+       y = "Abroutissement moyen (%)") +
+  theme_minimal()
+
+modele_ppl_abrout <- lm(data = info_placette_aldous %>%
+         group_by(PPL) %>%
+         filter(n() >= 10)
+         , AMOYj ~ PPL)
+
+summary(modele_ppl_abrout)
+
+
+#structure du peuplement
+ggplot(data = info_placette_aldous %>%
+         group_by(STC) %>%
+         filter(n() >= 10),
+       aes(x = STC, y = AMOYj)) +
+  geom_boxplot() +
+  # scale_x_discrete(labels = c("Faible", "Moyenne", "Forte")) +
+  labs(x = "Structure du peuplement",
+       y = "Abroutissement moyen (%)") +
+  theme_minimal()
+
+modele_stc_abrout <- lm(data = info_placette_aldous %>%
+         group_by(STC) %>%
+         filter(n() >= 10)
+         ,AMOYj ~ STC)
+
+summary(modele_stc_abrout)
+
+#pourcentage de parcelles agricoles
+cor(info_placette_aldous$PROP_FORET_500, info_placette_aldous$AMOYj)
+
+ggplot(data = info_placette_aldous,
+       aes(x = PROP_PARCELLE_500, y = AMOYj)) +
+  geom_point() +
+  labs(x = "Pourcentage de parcelles agricoles dans une zone tampon de 500 m",
+       y = "Abroutissement moyen (%)") +
+  theme_minimal()
+
+cor.test(info_placette_aldous$PROP_PARCELLE_500, info_placette_aldous$AMOYj, method = "spearman")
+
+#pourcentage de forêt
+cor(info_placette_aldous$PROP_FORET_500, info_placette_aldous$AMOYj)
+
+ggplot(data = info_placette_aldous,
+       aes(x = PROP_FORET_500, y = AMOYj)) +
+  geom_point() +
+  labs(x = "Pourcentage de forêt dans une zone tampon de 500 m",
+       y = "Abroutissement moyen (%)") +
+  theme_minimal()
+
+cor.test(info_placette_aldous$PROP_FORET_500, info_placette_aldous$AMOYj, method = "spearman")
+
+#pourcentage de forêt ancienne
+cor(info_placette_aldous$PROP_FOR_ANC_500, info_placette_aldous$AMOYj)
+
+ggplot(data = info_placette_aldous,
+       aes(x = PROP_FOR_ANC_500, y = AMOYj)) +
+  geom_point() +
+  labs(x = "Pourcentage de forêt ancienne dans une zone tampon de 500 m",
+       y = "Abroutissement moyen (%)") +
+  theme_minimal()
+
+cor.test(info_placette_aldous$PROP_FOR_ANC_500, info_placette_aldous$AMOYj, method = "spearman")
+
+#distance aux routes départementales
+cor(info_placette_aldous$DIST_DEP, info_placette_aldous$AMOYj)
+
+ggplot(data = info_placette_aldous,
+       aes(x = DIST_DEP, y = AMOYj)) +
+  geom_point() +
+  labs(x = "Distance à une route départementale (m)",
+       y = "Abroutissement moyen (%)") +
+  theme_minimal()
+
+cor.test(info_placette_aldous$DIST_DEP, info_placette_aldous$AMOYj, method = "spearman")
+
+#distance au GR65
+cor(info_placette_aldous$DIST_GR, info_placette_aldous$AMOYj)
+
+ggplot(data = info_placette_aldous,
+       aes(x = DIST_GR, y = AMOYj)) +
+  geom_point() +
+  labs(x = "Distance au GR65 (m)",
+       y = "Abroutissement moyen (%)") +
+  theme_minimal()
+
+cor.test(info_placette_aldous$DIST_GR, info_placette_aldous$AMOYj, method = "spearman")
+#corrélation due à la localisation du sentier
+
+#distance aux cours d'eau
+cor(info_placette_aldous$DIST_COURS_EAU, info_placette_aldous$AMOYj)
+
+ggplot(data = info_placette_aldous,
+       aes(x = DIST_COURS_EAU, y = AMOYj)) +
+  geom_point() +
+  labs(x = "Distance à un cours d'eau (m)",
+       y = "Abroutissement moyen (%)") +
+  theme_minimal()
+
+cor.test(info_placette_aldous$DIST_COURS_EAU, info_placette_aldous$AMOYj, method = "spearman")
+
+#surface occupée par les bâtiments
+cor(info_placette_aldous$SURF_BAT_500, info_placette_aldous$AMOYj)
+
+ggplot(data = info_placette_aldous %>%
+         filter(SURF_BAT_500 <= 10000),
+       aes(x = SURF_BAT_500, y = AMOYj)) +
+  geom_point() +
+  labs(x = "Surface occupée par des bâtiments (m²)",
+       y = "Abroutissement moyen (%)") +
+  theme_minimal()
+
+cor.test(info_placette_aldous$SURF_BAT_500, info_placette_aldous$AMOYj, method = "spearman")
+
+#recouvrement par la myrtille
+cor(info_placette_aldous$REC_VA_MY, info_placette_aldous$AMOYj)
+
+ggplot(data = info_placette_aldous,
+       aes(x = REC_VA_MY, y = AMOYj)) +
+  geom_point() +
+  labs(x = "Recouvrement de Vaccinium myrtillus (%)",
+       y = "Abroutissement moyen (%)") +
+  theme_minimal()
+
+cor.test(info_placette_aldous$REC_VA_MY, info_placette_aldous$AMOYj, method = "spearman")
+
+#coordonnées
+ggplot(data = info_placette_aldous,
+       aes(x = X_L93, y = AMOYj)) +
+  geom_point() +
+  labs(x = "Coordonnées de l'axe X (Lambert 93)",
+       y = "Abroutissement moyen (%)") +
+  theme_minimal()
+
+ggplot(data = info_placette_aldous,
+       aes(x = Y_L93, y = AMOYj)) +
+  geom_point() +
+  labs(x = "Coordonnées de l'axe Y (Lambert 93)",
+       y = "Abroutissement moyen (%)") +
+  theme_minimal()
+
+```
+
+#Colinéarité des variables
+
+```{r}
+var_modele <- info_placette_aldous[c(4:5, 6, 8:9, 11:14, 24, 28:40, 42:47, 56:61, 63:64)]
+var_expl <- var_modele[-c(1:2, 30)] #on retire la variable indépendante et les coordonnées
+var_expl_num <- var_expl [-c(3, 4, 8, 32)]
+
+#matrice de corrélation
+correlation = cor(var_expl_num)
+corrplot(correlation)
+
+#acp
+res.pca <- PCA(variables_num, 
+               ncp = 5,
+               graph=FALSE)
+fviz_eig(res.pca, addlabels = TRUE, ylim = c(0,100))
+
+#cercle des corrélations
+fviz_pca_var(res.pca,)
+
+#Le premier axe pourrait traduire l'expositon nord-sud. Le deuxième axe semble être représentatif du gradient altitudinal.
+#les pourcentages de foret et de parcelles agricoles sont inversement corrélés.
+#les températures maximales et moyennes et l'évapotranspiration potentielle sont fortement corrélées. L'altitude est inversement corrélée à ces variables
+
+#nuage des individus : représentativité des individus
+fviz_pca_ind(res.pca, col.ind = "cos2", repel=FALSE, geom="point")
+
+#lien avec le peuplement forestier
+fviz_pca_ind(res.pca, col.ind = info_placette_aldous$PPL, repel=FALSE, geom="point")
+
+#On retrouve les hêtraies et les peuplements de conifères (sapin, épicéa, douglas) dans le champs des valeurs négatives de l'axe 2 du graphique, ce qui correspond à des milieux d'altitude. Les peuplements de feuillus et les châtaigneraies sont situés plus bas en altitude. Les chênaies sont reparties dans une zone correspondant aux valeurs négatives de l'axe 1 et positive de l'axe 2, traduisant une faible altitude et une bonne exposition. Les pinèdes peuvent être retrouvés dans la section des valeurs négatives de l'axe 1, soit des milieux bien exposés.
+
+#lien avec AMOYj
+fviz_pca_ind(res.pca, col.ind = info_placette_aldous$AMOYj, repel=FALSE, geom="point", gradient.cols = c("green", "yellow", "red"))
+
+#cercle des corrélations pour les dimensions 3 et 4
+fviz_pca_var(res.pca, axes = c(3,4))
+
+#L'axe 3 pourrait être représentatif de l'utilisation des sites par les cervidés. Les recouvrement herbacés, de la myrtille et de la ronce étant colinéaires et relativement bien représentés par l'axe 4, ce dernier pourrait traduire les conditions de luminosité.
+
+#nuage des individus
+fviz_pca_ind(res.pca, axes = c(3,4), col.ind = info_placette_aldous$PPL, repel=FALSE, geom="point")
+
+```
+
+# Modélisation
+
+```{r}
+#premier modèle simple sans sélection automatique
+var_modele1 <- var_modele[-c(11, 14, 17, 19, 22, 24, 27, 34)] # on retire les variables colinéaires manuellement
+
+#modele spatial
+modele_foret1 <- lm(AMOYj ~ X_L93 + Y_L93, data = var_modele1)
+summary(modele_foret1)
+
+#vif(modele_foret1)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
