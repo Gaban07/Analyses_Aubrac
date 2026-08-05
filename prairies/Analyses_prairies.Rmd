@@ -21,14 +21,17 @@ library(paletteer)
 library(lme4)
 library(terra)
 library(tidyterra)
+library(factoextra)
+library(FactoMineR)
 
 setwd("D:/ingé/3A/Stage/Cervides_Aubrac/Analyse/prairies")
 ```
 
 
 ```{r data importation}
-info_placettes_encl_excl <- read_excel(path = "data/Releves_prairies_biomasse_et_phyto.xlsx", sheet = 1)
-perte_biomasse_encl_excl <- read_excel(path = "data/Releves_prairies_biomasse_et_phyto.xlsx", sheet = 2)
+info_placettes_prairies <- read_excel("data/Releves_prairies_biomasse_et_phyto.xlsx", sheet = 2)
+phyto_prairies <- read_excel(path = "data/Releves_prairies_biomasse_et_phyto.xlsx", sheet = 3)
+perte_biomasse_prairies <- read_excel(path = "data/Releves_prairies_biomasse_et_phyto.xlsx", sheet = 4)
 
 pnr_aubrac <- st_read("data/vectors/PNR_AUBRAC/PNR_AUBRAC_2026.shp")
 
@@ -67,7 +70,7 @@ ggplot(data = info_placettes_encl_excl_sf) +
 
 ## Statistiques descriptives
 
-#Visualisation des pertes par enclos
+# Visualisation des pertes par enclos
 
 ```{r}
 ggplot(data = perte_biomasse_encl_excl,
@@ -101,7 +104,7 @@ shapiro.test(perte_biomasse_encl_excl$pertes)
 
 La distribution peut être considérée comme normale.
 
-#Différences enclos-exclos
+# Différences enclos-exclos
 
 ```{r}
 ggplot(data = perte_biomasse_encl_excl) +
@@ -135,9 +138,9 @@ t.test(perte_biomasse_encl_excl$mf_tot_enclos,
 Les différences de moyennes entre enclos et exclos sont significatives.
 
 
-##Effets temporels
+## Effets temporels
 
-#Comparaison des pertes en biomasses selon les différentes années
+# Comparaison des pertes en biomasses selon les différentes années
 
 Évolution des pertes
 
@@ -258,7 +261,7 @@ lmm3 <-
 summary(lmm3)
 ```
 
-##Analyses spatiales
+## Analyses spatiales
 
 # Répartition spatiale des pertes en 2025
 
@@ -319,7 +322,7 @@ ggplot() +
 
 ## Analyses multivariées
 
-#Représentation des pertes selon la productivité
+# Représentation des pertes selon la productivité
 
 ```{r}
 ggplot(perte_biomasse_encl_excl,
@@ -356,4 +359,66 @@ cor.test(perte_biomasse_encl_excl$pertes,
          perte_biomasse_encl_excl$mf_tot_exclos)
 ```
 Les prairies les plus productives ne semblent pas être les plus apétentes.
+
+## Analyse floristique
+
+# AFC
+
+```{r}
+#sur les données d'abondance-dominance
+phyto_prairies <- as.data.frame(phyto_prairies)
+rownames(phyto_prairies) <- phyto_prairies$espece
+phyto_prairies$espece <- NULL
+
+
+#transposition des lignes et des colonnes
+phyto_prairies <- as.data.frame(t(phyto_prairies))
+
+#conversion en colonnes numériques
+# phyto_prairies <- sapply(phyto_prairies, as.numeric )
+
+
+##afc
+res.ca <- CA(phyto_prairies, graph = FALSE)
+print(round(res.ca$eig,1))
+fviz_eig(res.ca)
+
+#Observer les axes...
+res.ca$svd$U # axes pour les espèces
+res.ca$svd$V # axes pour les sites
+
+#Représentation des individus
+p_scal1 <- fviz_ca_biplot(res.ca,
+                          map = "colprincipal",   
+                          title = "Scaling 1 — columns principal",
+                          repel = TRUE)
+p_scal1
+
+p_scal2 <- fviz_ca_biplot(res.ca,
+                          map = "rowprincipal",  
+                          title = "Scaling 2 — rows principal",
+                          repel = TRUE)
+
+p_scal2
+```
+
+# Classification
+
+```{r}
+## Classification Ascendante Hierarchique
+
+# sur les coordonnées 
+X = scale(phyto_prairies)
+XDist = dist(X)
+resCAH = hclust(XDist,method="ward.D2")
+plot(resCAH,hang=-1,cex=0.5)
+res4 = rect.hclust(resCAH,k=4)
+CAHCluster = cutree(resCAH,k=4)
+
+fviz_ca_biplot(res.ca,
+               map = "colprincipal",
+               title = "Scaling 1 — columns principal",
+               repel = TRUE)
+```
+
 

@@ -1173,7 +1173,7 @@ p_sym <-  fviz_ca_biplot(res.ca,
                          map = "symbiplot",    
                          title = "Symmetric biplot — both principal",
                          repel = TRUE)
-p_sym 
+p_sym
 
 
 ```
