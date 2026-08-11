@@ -8,7 +8,7 @@
 
 → Visualiser et tester l'effet colinéarité spatiale : différence entre épicentre et périphérie
 	→ Plot carte avec niveau d'abroutissement
-	→ Tests statistiques associés : à voir tester l'autocorélation
+	→ Tests statistiques associés : à voir tester l'autocorélation → indice de Moran sur les 6 années de suivi
 
 → Modélisation et test des effets de différentes variables (caractéristiques des prairies, paysage, écologie, densité de cervidés)
 

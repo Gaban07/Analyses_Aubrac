@@ -29,9 +29,9 @@ setwd("D:/ingé/3A/Stage/Cervides_Aubrac/Analyse/prairies")
 
 
 ```{r data importation}
-info_placettes_prairies <- read_excel("data/Releves_prairies_biomasse_et_phyto.xlsx", sheet = 2)
-phyto_prairies <- read_excel(path = "data/Releves_prairies_biomasse_et_phyto.xlsx", sheet = 3)
-perte_biomasse_prairies <- read_excel(path = "data/Releves_prairies_biomasse_et_phyto.xlsx", sheet = 4)
+info_placettes_encl_excl <- read_excel("data/Releves_prairies_biomasse_et_phyto.xlsx", sheet = 3)
+phyto_prairies <- read_excel(path = "data/Releves_prairies_biomasse_et_phyto.xlsx", sheet = 4)
+perte_biomasse_encl_excl <- read_excel(path = "data/Releves_prairies_biomasse_et_phyto.xlsx", sheet = 5)
 
 pnr_aubrac <- st_read("data/vectors/PNR_AUBRAC/PNR_AUBRAC_2026.shp")
 
@@ -42,6 +42,9 @@ mnt_25 <- rast("data/rastors/MNT_RA_107_2010.tif")
 info_placettes_encl_excl$Id_EE <- as.factor(info_placettes_encl_excl$Id_EE)
 info_placettes_encl_excl$pose_2026 <- as.factor(info_placettes_encl_excl$pose_2026)
 
+info_placettes_encl_excl$XL93_approx <- as.numeric(info_placettes_encl_excl$XL93_approx)
+info_placettes_encl_excl$YL93_approx <- as.numeric(info_placettes_encl_excl$YL93_approx)
+
 perte_biomasse_encl_excl$Id_EE <- as.factor(perte_biomasse_encl_excl$Id_EE)
 perte_biomasse_encl_excl$date_pose <- as.Date(perte_biomasse_encl_excl$date_pose) #erreur à corriger
 perte_biomasse_encl_excl$date_releve <- as.Date(perte_biomasse_encl_excl$date_releve)
@@ -49,7 +52,7 @@ perte_biomasse_encl_excl$date_releve <- as.Date(perte_biomasse_encl_excl$date_re
 
 
 ```{r data editing}
-info_placettes_encl_excl_sf <- st_as_sf(info_placettes_encl_excl[!is.na(info_placettes_encl_excl$XL93_approx), ],
+info_placettes_encl_excl_sf <- st_as_sf(info_placettes_encl_excl,
                                         coords = c("XL93_approx", "YL93_approx"),
                                         crs = 2154
         )
@@ -102,7 +105,7 @@ ggplot(data = perte_biomasse_encl_excl,
 shapiro.test(perte_biomasse_encl_excl$pertes)
 ```
 
-La distribution peut être considérée comme normale.
+La distribution ne peut être considérée comme normale.
 
 # Différences enclos-exclos
 
@@ -126,10 +129,10 @@ ggplot(data = perte_biomasse_encl_excl) +
 
 #test de Shapiro pour tester la normalité de la distribution des biomasses
 shapiro.test(perte_biomasse_encl_excl$mf_tot_enclos)
-shapiro.test(perte_biomasse_encl_excl$mf_tot_exclos) #les distributions sont normales
-
+shapiro.test(perte_biomasse_encl_excl$mf_tot_exclos) #distributions non normales ?
 
 #Two sample t-test pour tester les différences de distribution entre enclos et exclos
+# a modifier pour adapter à la distribution
 t.test(perte_biomasse_encl_excl$mf_tot_enclos,
        perte_biomasse_encl_excl$mf_tot_exclos,
        paired = TRUE)
@@ -358,7 +361,20 @@ cor.test(perte_biomasse_encl_excl$pertes,
 cor.test(perte_biomasse_encl_excl$pertes,
          perte_biomasse_encl_excl$mf_tot_exclos)
 ```
+
 Les prairies les plus productives ne semblent pas être les plus apétentes.
+
+# Représentation des pertes selon l'abroutissement de la placette forestière la plus proche
+
+```{r}
+ggplot(perte_biomasse_encl_excl_sf[which(perte_biomasse_encl_excl_sf$DIST_PLCT_FRT <= 250),],
+       aes(x = AMOYj_PLCT_FRT, y = pertes)
+       ) +
+  geom_point() +
+  theme_minimal()
+
+```
+
 
 ## Analyse floristique
 
