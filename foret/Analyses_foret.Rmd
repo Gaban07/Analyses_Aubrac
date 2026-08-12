@@ -10,7 +10,7 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 ```{r packages, include=FALSE}
-install.packages("ggpplot2", "tidyr", "dplyr", "readxl", "openxlsx", "sf", "cowplot", "corrplot", "FactoMineR", "factoextra", "spdep", "tmap", "FSA", "multcomp", "multcompView", "MuMIn", "GGally", "glmmTMB", "DHARMa")
+install.packages("ggpplot2", "tidyr", "dplyr", "readxl", "openxlsx", "sf", "cowplot", "corrplot", "FactoMineR", "factoextra", "spdep", "tmap", "FSA", "multcomp", "multcompView", "MuMIn", "GGally", "glmmTMB", "nlme", "AICcmodavg")
 
 library(ggplot2)
 library(tidyr)
@@ -31,7 +31,8 @@ library(MuMIn)
 library(GGally)
 library(glmmTMB)
 library(DHARMa)
-library(lme4)
+library(nlme)
+library(AICcmodavg)
 ```
 
 ```{r set working directory, include=FALSE}
@@ -357,7 +358,9 @@ summary(modele_beta)
 especes_cibles <- c(
   "Vaccinium myrtillus",
   "Rubus fruticosus",
-  "Ilex aquifolium"
+  "Ilex aquifolium",
+  "Fagus sylvatica",
+  "Quercus petraea"
   )
 
 tableau_TRij <- Indices_abroutissement_pl_esp %>%
@@ -371,14 +374,16 @@ tableau_TRij <- Indices_abroutissement_pl_esp %>%
   rename(
     REC_IL_AQ = `Ilex aquifolium`,
     REC_RU_FR = `Rubus fruticosus`,
-    REC_VA_MY = `Vaccinium myrtillus`
+    REC_VA_MY = `Vaccinium myrtillus`,
+    REC_FA_SY = `Fagus sylvatica`,
+    REC_QU_PE = `Quercus petraea`
   )
 
 
 
 info_placette <- 
   left_join(info_placette, tableau_TRij, by = c("ID" = "IDP")) %>%
-  mutate(across(c(REC_IL_AQ, REC_RU_FR, REC_VA_MY), ~ replace_na(.x, 0)))
+  mutate(across(c(REC_FA_SY, REC_IL_AQ, REC_QU_PE, REC_RU_FR, REC_VA_MY), ~ replace_na(.x, 0)))
 
 ```
 
@@ -551,10 +556,20 @@ ggplot() +
           ) +
   scale_color_manual(labels = labels_regions, values = couleurs_regions)
 
+#répartition des placettes "hêtraies et hêtraies-sapinières"
 ggplot() +
-  geom_boxplot(data = info_placette_aldous,
-               aes(x = ZONE2, y = AMOYj, fill = ZONE2)
-               )
+  geom_sf(data = pnr_aubrac, fill = "white", color = "black", size = 0.5) +
+  geom_sf(data = info_placette_sf[which(info_placette_sf$UNI == 'HET'),], aes(color = ZONE2)
+          ) +
+  scale_color_manual(labels = labels_regions, values = couleurs_regions)
+
+#répartition des placettes "mélange de feuillus"
+ggplot() +
+  geom_sf(data = pnr_aubrac, fill = "white", color = "black", size = 0.5) +
+  geom_sf(data = info_placette_sf[which(info_placette_sf$UNI == 'FEU'),], aes(color = ZONE2)
+          ) +
+  scale_color_manual(labels = labels_regions, values = couleurs_regions)
+
 
 #vérification de la distribution des groupes
 ggplot() +
@@ -831,6 +846,7 @@ ggplot(data = info_placette_aldous,
   theme_minimal()
 
 ```
+
 
 ```{r}
 #hêtraies
@@ -1166,9 +1182,9 @@ ggplot(data = info_placette_feu,
 # Colinéarité des variables
 
 ```{r}
-var_modele <- info_placette_aldous[c(4:6, 8:9, 11:14, 24, 25, 28:40, 42:47, 52, 53, 56, 57, 59, 62, 63:65)]
-var_expl <- var_modele[-c(1:2, 37)] #on retire les coordonnées et la variable réponse
-var_expl_num <- var_expl [-c(3, 4, 8, 9, 29, 30)]
+var_modele <- info_placette_aldous[c(4:6, 8:9, 11:14, 24, 25, 28:40, 42:47, 52, 53, 56, 57, 59, 62, 63:67)]
+var_expl <- var_modele[-c(1:2, 36)] #on retire les coordonnées et la variable réponse
+var_expl_num <- var_expl [-c(3, 4, 8, 9, 29)]
 
 #matrice de corrélation
 correlation = cor(var_expl_num)
@@ -1224,28 +1240,17 @@ fviz_pca_var(res.pca, col.var = "cos2",
              repel = TRUE)
 var_modele <- var_modele[-c(25, 27:30)] #on ne conserve que l'altitude, les précipitations et le bilan hydrique climatique
 
-var_num_foret <- var_modele[c(12, 13, 20, 31)]
-res.pca <- PCA(var_num_foret, 
+var_num_paysage <- var_modele[c(12:15, 20, 31)]
+res.pca <- PCA(var_num_paysage, 
                ncp = 5,
                graph=FALSE)
 fviz_eig(res.pca, addlabels = TRUE, ylim = c(0,100))
 fviz_pca_var(res.pca, col.var = "cos2",
              gradient.cols = c("blue", "orange", "red"),
              repel = TRUE)
-var_modele <- var_modele[-13] #on retire la proportion de foret dans les 500 mètres
+var_modele <- var_modele[-c(12,14,15,20)] #on ne garde que la proportion de foret dans les 500 mètres
 
-var_num_prairies <- var_modele[c(13, 14, 30)]
-res.pca <- PCA(var_num_prairies, 
-               ncp = 5,
-               graph=FALSE)
-fviz_eig(res.pca, addlabels = TRUE, ylim = c(0,100))
-fviz_pca_var(res.pca, col.var = "cos2",
-             gradient.cols = c("blue", "orange", "red"),
-             repel = TRUE)
-res.pca$var
-var_modele <- var_modele[-14] #on retire la proportion de prairies dans les 500 mètres
-
-var_num_dispo <- var_modele[c(9, 28:32)] #variables sur la disponibilité alimentaire
+var_num_dispo <- var_modele[c(9, 26:32)] #variables sur la disponibilité alimentaire
 res.pca <- PCA(var_num_dispo, 
                ncp = 5,
                graph=FALSE)
@@ -1253,9 +1258,9 @@ fviz_eig(res.pca, addlabels = TRUE, ylim = c(0,100))
 fviz_pca_var(res.pca, col.var = "cos2",
              gradient.cols = c("blue", "orange", "red"),
              repel = TRUE)
-var_modele <- var_modele[-c(9, 30:32)]
+var_modele <- var_modele[-c(29:32)]
 
-var_num_routes <- var_modele[c(13, 14, 28)] #variables les routes départementales et communales
+var_num_routes <- var_modele[c(13, 14, 27)] #variables sur les routes départementales et communales
 res.pca <- PCA(var_num_routes, 
                ncp = 5,
                graph=FALSE)
@@ -1263,9 +1268,9 @@ fviz_eig(res.pca, addlabels = TRUE, ylim = c(0,100))
 fviz_pca_var(res.pca, col.var = "cos2",
              gradient.cols = c("blue", "orange", "red"),
              repel = TRUE)
-var_modele <- var_modele[-c(14, 15)]
+var_modele <- var_modele[-c(14, 15)] #on garde la distance aux départementales pour des raisons biologiques (potentiellement plus d'effet que la distance aux communales)
 
-var_num_bats <- var_modele[c(16:18, 26)] #variables sur les batiments
+var_num_bats <- var_modele[c(15:17, 25)] #variables sur les batiments
 res.pca <- PCA(var_num_bats, 
                ncp = 5,
                graph=FALSE)
@@ -1273,7 +1278,7 @@ fviz_eig(res.pca, addlabels = TRUE, ylim = c(0,100))
 fviz_pca_var(res.pca, col.var = "cos2",
              gradient.cols = c("blue", "orange", "red"),
              repel = TRUE)
-var_modele <- var_modele[-c(17, 18)] #on retire la distance aux batiments qui est moins cohérente que la surface (effet spatiales où l'abroutissement est concentré dans des zones morcellées)
+var_modele <- var_modele[-c(15, 16)] #on retire la distance aux batiments qui est moins cohérente que la surface (effet spatiale où l'abroutissement est concentré dans des zones morcellées)
 ```
 
 
@@ -1281,31 +1286,37 @@ var_modele <- var_modele[-c(17, 18)] #on retire la distance aux batiments qui es
 
 ```{r}
 #premier modele linéaire sans intégrer l'autocorélation spatiale
-var_modele_moins_coord <- var_modele[-c(1, 2, 9)]
+var_modele_moins_coord <- var_modele[-c(1, 2)]
 
 ggpairs(var_modele_moins_coord[, sapply(var_modele_moins_coord, is.numeric)])
 
 model_moins_coord <- lm(AMOYj ~ ., data = var_modele_moins_coord)
 model_global <- lm(AMOYj ~ ., data = var_modele)
+model_var_selected <- lm(AMOYj ~ PROP_FORET_250 + PROP_PRAIRIES_250 + DIST_DEP + 
+    DIST_COURS_EAU + NB_FECES + EXPO_NS + DTj,
+    data = var_modele)
+
 
 summary(model_moins_coord)
 summary(model_global)
+summary(model_var_selected)
+```
 
+```{r}
 #glmm avec distribution beta
 var_modele_glmm <- var_modele %>% #on convertie AMOYj en proportion
-  mutate(AMOYj = AMOYj / 100)
+  mutate(AMOYj_prop = AMOYj / 100)
 
-# Créer la structure spatiale (matrice de positions + facteur de groupe factice)
+# Construction du terme spatial avec les coordonnées centrées
 var_modele_glmm$pos   <- numFactor(var_modele_glmm$X_L93, var_modele_glmm$Y_L93)
 var_modele_glmm$group <- factor(1)
 
 #modele global
 modele_glmm <- glmmTMB(
-  AMOYj ~ ALTI + STC +
+  AMOYj ~ ALTI +
     PROP_FORET_250 + PROP_PRAIRIES_250 + DIST_DEP + 
-    DIST_COURS_EAU + NB_FECES + EXPO_NS + DTj
-  + exp(pos + 0 | group)
-  ,
+    DIST_COURS_EAU + NB_FECES + EXPO_NS + DTj + 
+    exp(pos + 0 | group),
   data = var_modele_glmm,
   family = beta_family(),
   na.action = "na.fail"
@@ -1315,17 +1326,360 @@ simulation_output <- simulateResiduals(modele_glmm)
 plot(simulation_output)
 
 summary(modele_glmm)
+```
 
-modele_lme <- lme4(
-  AMOYj ~ ALTI + STC +
-    PROP_FORET_250 + PROP_PRAIRIES_250 + DIST_DEP + 
-    DIST_COURS_EAU + NB_FECES + EXPO_NS + DTj
-  + exp(pos + 0 | group)
-  ,
+
+```{r}
+#avec nlme : pas de regression beta possible donc transformation logit
+
+var_modele_glmm$logit_AMOYj <- log(var_modele_glmm$AMOYj_prop / (1 - var_modele_glmm$AMOYj_prop))
+var_modele_glmm$log_AMOYj <- log(var_modele_glmm$AMOYj)  # AMOYj en % (pas la proportion/100)
+
+#comparaison de l'aic de plusieurs modeles avant la modele averaging
+model_logit_global <- gls(
+  logit_AMOYj ~ PENTE + ALTI + TOPO + STC + REC_ARBO + REC_ARBU + REC_HERBA + PPL + UNI +
+    PROP_FORET_500 + DIST_DEP + DIST_COURS_EAU + SURF_BAT_500 + 
+    BHC_HI_2024 + PREC_HI_2024 + NB_FECES + EXPO_NS + EXPO_EO + REC_FA_SY,
+  correlation = corExp(form = ~ X_L93 + Y_L93),
   data = var_modele_glmm,
-  family = beta_family(),
-  na.action = "na.fail"
+  na.action = "na.fail",
+  method = "ML"
 )
+summary(model_logit_global)
+
+model_logit_trie1 <- gls(
+  logit_AMOYj ~ ALTI + PENTE + STC + PROP_FORET_500 + SURF_BAT_500 + DIST_COURS_EAU + NB_FECES + EXPO_NS + REC_HERBA,
+  correlation = corExp(form = ~ X_L93 + Y_L93),
+  data = var_modele_glmm,
+  na.action = "na.fail",
+  method = "ML"
+)
+summary(model_logit_trie1)
+
+model_logit_trie2 <- gls(
+  logit_AMOYj ~ ALTI + STC + PROP_FORET_500 + SURF_BAT_500 + DIST_COURS_EAU + NB_FECES + EXPO_NS + DTj,
+  correlation = corExp(form = ~ X_L93 + Y_L93),
+  data = var_modele_glmm,
+  na.action = "na.fail",
+  method = "ML"
+)
+summary(model_logit_trie2)
+
+
+aictab(list(model_logit_trie1, model_logit_trie2))
+
+#on garde model_logit_trie6 qui a la plus faible AIC (difference inférieure à 2 si on supprime plus de variables)
+
+```
+
+```{r}
+#diagnostics du modèle GLS/LME spatial (à revoir, fait ici par Claude Sonnet 5)
+
+# Résidus normalisés (tiennent compte de la structure corExp) et valeurs ajustées
+res_norm <- residuals(model_logit_trie1, type = "normalized")
+fit_val  <- fitted(model_logit_trie1)
+
+## 1. Résidus vs valeurs ajustées (homoscédasticité)
+plot(fit_val, res_norm,
+     xlab = "Valeurs ajustées", ylab = "Résidus normalisés",
+     main = "Résidus vs ajustés")
+abline(h = 0, col = "red", lty = 2)
+lines(lowess(fit_val, res_norm), col = "blue")  # tendance locale, aide à repérer une structure résiduelle
+
+## 2. Histogramme des résidus normalisés
+hist(res_norm, breaks = 15, main = "Histogramme des résidus normalisés",
+     xlab = "Résidus normalisés")
+
+## 3. Densité des résidus normalisés
+plot(density(res_norm), main = "Densité des résidus normalisés")
+
+## 4. QQ-plot (complète utilement l'histogramme/densité pour juger la normalité)
+qqnorm(res_norm, main = "QQ-plot des résidus normalisés")
+qqline(res_norm, col = "red")
+
+## 5. Test de normalité
+shapiro.test(res_norm)
+
+## 6. Résidus normalisés vs prédicteurs (détecter une non-linéarité oubliée)
+par(mfrow = c(2, 2))
+plot(var_modele_glmm$NB_FECES, res_norm,
+     xlab = "NB_FECES", ylab = "Résidus normalisés")
+abline(h = 0, col = "red")
+
+plot(var_modele_glmm$EXPO_NS, res_norm,
+     xlab = "EXPO_NS", ylab = "Résidus normalisés")
+abline(h = 0, col = "red")
+
+plot(var_modele_glmm$DTj, res_norm,
+     xlab = "DTj", ylab = "Résidus normalisés")
+abline(h = 0, col = "red")
+par(mfrow = c(1, 1))  # revenir à un seul graphique
+
+## 7. Variogramme spatial des résidus (LE diagnostic clé pour l'autocorrélation)
+# Doit être globalement plat si corExp a bien absorbé la structure spatiale
+plot(Variogram(model_logit_trie2, form = ~ X_L93 + Y_L93, resType = "normalized"),
+     main = "Variogramme des résidus normalisés")
+
+# Comparaison avec les résidus bruts, pour visualiser l'effet de la correction spatiale
+par(mfrow = c(1, 2))
+plot(Variogram(model_logit_trie1, form = ~ X_L93 + Y_L93, resType = "response"),
+     main = "Résidus bruts")
+plot(Variogram(model_logit_trie1, form = ~ X_L93 + Y_L93, resType = "normalized"),
+     main = "Résidus normalisés")
+par(mfrow = c(1, 1))
+
+## 8. Confirmation quantitative : test de Moran's I sur les résidus normalisés
+library(ape)
+coords <- as.matrix(var_modele_glmm[, c("X_L93", "Y_L93")])
+d <- as.matrix(dist(coords))
+diag(d) <- NA
+w <- 1 / d
+diag(w) <- 0
+w[is.na(w)] <- 0   # sécurité si d contenait des zéros (points superposés)
+
+Moran.I(res_norm, w)
+```
+
+```{r}
+#modele averaging (méthodo suivie : https://uoftcoders.github.io/rcourse/lec09-model-selection.html)
+options(na.action = "na.fail") # Required for dredge to run
+
+model_logit_dredge <- dredge(model_logit_trie1, rank = "AICc")
+
+options(na.action = "na.omit") # set back to default
+
+head(model_logit_dredge)
+nrow(model_logit_dredge)
+
+top_model <- get.models(model_logit_dredge, subset = 1)[[1]]
+top_model
+summary(top_model)
+
+summary(model.avg(model_logit_dredge, subset = delta <= 2))
+```
+
+
+# Modélisation pour les hêtraies
+
+```{r}
+var_modele_glmm_het <- var_modele_glmm %>%
+  filter(UNI == "HET")
+
+model_logit_trie1_het <- gls(
+  logit_AMOYj ~ ALTI + STC + PROP_FORET_500 + SURF_BAT_500 + DIST_COURS_EAU + NB_FECES + EXPO_NS + REC_HERBA + REC_FA_SY,
+  correlation = corExp(form = ~ X_L93 + Y_L93),
+  data = var_modele_glmm_het,
+  na.action = "na.fail",
+  method = "ML"
+)
+summary(model_logit_trie1_het)
+
+model_logit_trie2_het <- gls(
+  logit_AMOYj ~ ALTI + PENTE*ZONE2 + STC + PROP_FORET_500 + SURF_BAT_500 + DIST_COURS_EAU + NB_FECES + EXPO_NS + REC_HERBA + REC_FA_SY,
+  correlation = corExp(form = ~ X_L93 + Y_L93),
+  data = var_modele_glmm_het,
+  na.action = "na.fail",
+  method = "ML"
+)
+summary(model_logit_trie2_het)
+
+
+aictab(list(model_logit_trie_het, model_logit_trie1_het)
+
+#on garde model_logit_trie1_het
+
+#diagnostics du modèle GLS/LME spatial (à revoir, fait ici par Claude Sonnet 5)
+
+# Résidus normalisés (tiennent compte de la structure corExp) et valeurs ajustées
+res_norm <- residuals(model_logit_trie1_het, type = "normalized")
+fit_val  <- fitted(model_logit_trie1_het)
+
+## 1. Résidus vs valeurs ajustées (homoscédasticité)
+plot(fit_val, res_norm,
+     xlab = "Valeurs ajustées", ylab = "Résidus normalisés",
+     main = "Résidus vs ajustés")
+abline(h = 0, col = "red", lty = 2)
+lines(lowess(fit_val, res_norm), col = "blue")  # tendance locale, aide à repérer une structure résiduelle
+
+## 2. Histogramme des résidus normalisés
+hist(res_norm, breaks = 15, main = "Histogramme des résidus normalisés",
+     xlab = "Résidus normalisés")
+
+## 3. Densité des résidus normalisés
+plot(density(res_norm), main = "Densité des résidus normalisés")
+
+## 4. QQ-plot (complète utilement l'histogramme/densité pour juger la normalité)
+qqnorm(res_norm, main = "QQ-plot des résidus normalisés")
+qqline(res_norm, col = "red")
+
+## 5. Test de normalité
+shapiro.test(res_norm)
+
+## 6. Résidus normalisés vs prédicteurs (détecter une non-linéarité oubliée)
+par(mfrow = c(2, 2))
+plot(var_modele_glmm_het$NB_FECES, res_norm,
+     xlab = "NB_FECES", ylab = "Résidus normalisés")
+abline(h = 0, col = "red")
+
+plot(var_modele_glmm_het$EXPO_NS, res_norm,
+     xlab = "EXPO_NS", ylab = "Résidus normalisés")
+abline(h = 0, col = "red")
+
+plot(var_modele_glmm_het$DTj, res_norm,
+     xlab = "DTj", ylab = "Résidus normalisés")
+abline(h = 0, col = "red")
+par(mfrow = c(1, 1))  # revenir à un seul graphique
+
+## 7. Variogramme spatial des résidus (LE diagnostic clé pour l'autocorrélation)
+# Doit être globalement plat si corExp a bien absorbé la structure spatiale
+plot(Variogram(model_logit_trie1_het, form = ~ X_L93 + Y_L93, resType = "normalized"),
+     main = "Variogramme des résidus normalisés")
+
+# Comparaison avec les résidus bruts, pour visualiser l'effet de la correction spatiale
+par(mfrow = c(1, 2))
+plot(Variogram(model_logit_trie1_het, form = ~ X_L93 + Y_L93, resType = "response"),
+     main = "Résidus bruts")
+plot(Variogram(model_logit_trie1_het, form = ~ X_L93 + Y_L93, resType = "normalized"),
+     main = "Résidus normalisés")
+par(mfrow = c(1, 1))
+
+## 8. Confirmation quantitative : test de Moran's I sur les résidus normalisés
+library(ape)
+coords <- as.matrix(var_modele_glmm_het[, c("X_L93", "Y_L93")])
+d <- as.matrix(dist(coords))
+diag(d) <- NA
+w <- 1 / d
+diag(w) <- 0
+w[is.na(w)] <- 0   # sécurité si d contenait des zéros (points superposés)
+
+Moran.I(res_norm, w)
+```
+
+
+```{r}
+#modele averaging
+options(na.action = "na.fail") # Required for dredge to run
+model_logit_dredge_het <- dredge(model_logit_trie1_het, rank = "AICc")
+options(na.action = "na.omit") # set back to default
+
+head(model_logit_dredge_het)
+nrow(model_logit_dredge_het)
+
+top_model <- get.models(model_logit_dredge_het, subset = 1)[[1]]
+top_model
+summary(top_model)
+
+summary(model.avg(model_logit_dredge_het, subset = delta <= 2))
+```
+
+# Modélisation pour les mélanges de feuillus
+
+```{r}
+var_modele_glmm_feu <- var_modele_glmm %>%
+  filter(UNI == "FEU")
+
+model_logit_trie_feu <- gls(
+  logit_AMOYj ~ PENTE + ALTI + STC + PROP_FORET_500 + SURF_BAT_500 + DIST_COURS_EAU + NB_FECES + EXPO_NS + REC_HERBA,
+  correlation = corExp(form = ~ X_L93 + Y_L93),
+  data = var_modele_glmm_feu,
+  na.action = "na.fail",
+  method = "ML"
+)
+summary(model_logit_trie_feu)
+
+model_logit_trie1_feu <- gls(
+  logit_AMOYj ~ NB_FECES + EXPO_NS + DTj,
+  correlation = corExp(form = ~ X_L93 + Y_L93),
+  data = var_modele_glmm_feu,
+  na.action = "na.fail",
+  method = "ML"
+)
+summary(model_logit_trie1_feu)
+
+aictab(list(model_logit_trie_feu, model_logit_trie1_feu))
+
+#diagnostics du modèle GLS/LME spatial
+
+# Résidus normalisés (tiennent compte de la structure corExp) et valeurs ajustées
+res_norm <- residuals(model_logit_trie_feu, type = "normalized")
+fit_val  <- fitted(model_logit_trie_feu)
+
+## 1. Résidus vs valeurs ajustées (homoscédasticité)
+plot(fit_val, res_norm,
+     xlab = "Valeurs ajustées", ylab = "Résidus normalisés",
+     main = "Résidus vs ajustés")
+abline(h = 0, col = "red", lty = 2)
+lines(lowess(fit_val, res_norm), col = "blue")  # tendance locale, aide à repérer une structure résiduelle
+
+## 2. Histogramme des résidus normalisés
+hist(res_norm, breaks = 15, main = "Histogramme des résidus normalisés",
+     xlab = "Résidus normalisés")
+
+## 3. Densité des résidus normalisés
+plot(density(res_norm), main = "Densité des résidus normalisés")
+
+## 4. QQ-plot (complète utilement l'histogramme/densité pour juger la normalité)
+qqnorm(res_norm, main = "QQ-plot des résidus normalisés")
+qqline(res_norm, col = "red")
+
+## 5. Test de normalité
+shapiro.test(res_norm)
+
+## 6. Résidus normalisés vs prédicteurs (détecter une non-linéarité oubliée)
+par(mfrow = c(2, 2))
+plot(var_modele_glmm_feu$NB_FECES, res_norm,
+     xlab = "NB_FECES", ylab = "Résidus normalisés")
+abline(h = 0, col = "red")
+
+plot(var_modele_glmm_feu$EXPO_NS, res_norm,
+     xlab = "EXPO_NS", ylab = "Résidus normalisés")
+abline(h = 0, col = "red")
+
+plot(var_modele_glmm_feu$DTj, res_norm,
+     xlab = "DTj", ylab = "Résidus normalisés")
+abline(h = 0, col = "red")
+par(mfrow = c(1, 1))  # revenir à un seul graphique
+
+## 7. Variogramme spatial des résidus (LE diagnostic clé pour l'autocorrélation)
+# Doit être globalement plat si corExp a bien absorbé la structure spatiale
+plot(Variogram(model_logit_trie_feu, form = ~ X_L93 + Y_L93, resType = "normalized"),
+     main = "Variogramme des résidus normalisés")
+
+# Comparaison avec les résidus bruts, pour visualiser l'effet de la correction spatiale
+par(mfrow = c(1, 2))
+plot(Variogram(model_logit_trie_feu, form = ~ X_L93 + Y_L93, resType = "response"),
+     main = "Résidus bruts")
+plot(Variogram(model_logit_trie_feu, form = ~ X_L93 + Y_L93, resType = "normalized"),
+     main = "Résidus normalisés")
+par(mfrow = c(1, 1))
+
+## 8. Confirmation quantitative : test de Moran's I sur les résidus normalisés
+library(ape)
+coords <- as.matrix(var_modele_glmm[, c("X_L93", "Y_L93")])
+d <- as.matrix(dist(coords))
+diag(d) <- NA
+w <- 1 / d
+diag(w) <- 0
+w[is.na(w)] <- 0   # sécurité si d contenait des zéros (points superposés)
+
+Moran.I(res_norm, w)
+```
+
+
+```{r}
+#modele averaging
+options(na.action = "na.fail") # Required for dredge to run
+model_log_dredge_feu <- dredge(model_logit_trie_feu, rank = "AICc")
+options(na.action = "na.omit") # set back to default
+
+head(model_log_dredge_feu)
+nrow(model_log_dredge_feu)
+
+top_model <- get.models(model_log_dredge_feu, subset = 1)[[1]]
+top_model
+summary(top_model)
+
+summary(model.avg(model_log_dredge_feu, subset = delta <= 2))
 ```
 
 
@@ -1394,6 +1748,12 @@ p_sym
 ```
 
 
+# Calcul des indices de richesse et de diversité
+
+```{r}
+Indices_diversite_flore <- phyto %>%
+  group_by()
+```
 
 
 

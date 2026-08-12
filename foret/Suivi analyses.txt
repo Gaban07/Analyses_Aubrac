@@ -19,7 +19,7 @@
 
 	• Exploration des données : homogénéité , normalité
 	• ACP pour vérifier la colinéarité, les relations et les interactions entre variables
-	• GLMM : intégrer l'auto-corrélation spatiale, adapter à la non-normalité
+	• GLMM : intégrer l'auto-corrélation spatiale, adapter à la non-normalité (transformation log ou beta reg ?)
 
 4) Impacts sur la diversité du sous-bois
 
