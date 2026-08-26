@@ -10,20 +10,32 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 ```{r packages, include=FALSE}
-install.packages("readxl", "sf", "ggpplot2", "tidyr", "dplyr", "paletteer", "lme4", "terra", "tidyterra")
+install.packages("readxl", "sf", "ggpplot2", "tidyr", "dplyr", "paletteer", "lme4", "terra", "tidyterra", "FD", "purrr", "scales", "corrplot", "GGally", "patchwork", "ggpubr")
 
 library(readxl)
 library(sf)
 library(ggplot2)
 library(tidyr)
 library(dplyr)
+library(FSA)
+library(spdep)
+library(ggpubr)
 library(paletteer)
+library(patchwork)
+library(GGally)
+library(corrplot)
 library(lme4)
 library(terra)
 library(tidyterra)
 library(factoextra)
 library(FactoMineR)
+library(FD)
+library(purrr)
+library(MuMIn)
+library(scales)
+```
 
+```{r set working directory, include=FALSE}
 setwd("D:/ingé/3A/Stage/Cervides_Aubrac/Analyse/prairies")
 ```
 
@@ -32,11 +44,14 @@ setwd("D:/ingé/3A/Stage/Cervides_Aubrac/Analyse/prairies")
 info_placettes_encl_excl <- read_excel("data/Releves_prairies_biomasse_et_phyto.xlsx", sheet = 3)
 phyto_prairies <- read_excel(path = "data/Releves_prairies_biomasse_et_phyto.xlsx", sheet = 4)
 perte_biomasse_encl_excl <- read_excel(path = "data/Releves_prairies_biomasse_et_phyto.xlsx", sheet = 5)
+species_traits <- read.csv("data/trait.csv", header = TRUE, row.names = 1, dec=".", sep="\t")
+info_placette_aldous <- read.csv("../foret/exports/info_placette_aldous.csv", header = TRUE, row.names = 1, dec = ",", sep = ";")
 
-pnr_aubrac <- st_read("data/vectors/PNR_AUBRAC/PNR_AUBRAC_2026.shp")
+pnr_aubrac <- st_read("../data/vectors/PNR_AUBRAC/PNR_AUBRAC_2026.shp")
 
-mnt_25 <- rast("data/rastors/MNT_RA_107_2010.tif")
+mnt_25 <- rast("../data/rastors/MNT_RA_107_2010.tif")
 ```
+
 
 ```{r conversions}
 info_placettes_encl_excl$Id_EE <- as.factor(info_placettes_encl_excl$Id_EE)
@@ -51,7 +66,44 @@ perte_biomasse_encl_excl$date_releve <- as.Date(perte_biomasse_encl_excl$date_re
 ```
 
 
+```{r}
+#calcul des indices de qualité des prairies
+
+phyto_prairies_calcul <- phyto_prairies %>%
+  mutate(espece = gsub("[ -]", "_", espece))
+
+
+phyto_prairies_t <- as.data.frame(t(phyto_prairies_calcul))
+colnames(phyto_prairies_t) <- phyto_prairies_t[which(rownames(phyto_prairies_t) == "espece"),]
+phyto_prairies_t <- phyto_prairies_t[-which(rownames(phyto_prairies_t) == "espece"),]
+
+sites <- rownames(phyto_prairies_t)
+phyto_prairies_t <- as.data.frame(lapply(phyto_prairies_t, as.numeric))
+rownames(phyto_prairies_t) <- sites
+
+comm <- phyto_prairies_t[, colnames(phyto_prairies_t) %in% rownames(species_traits)]
+traits <- species_traits[colnames(comm), c("LDMC", "SLA")]
+
+comm <- as.matrix(comm)
+traits <- as.matrix(traits)
+
+cwm <- functcomp(traits, comm)
+cwm$Id_EE <- rownames(cwm)
+
+info_placettes_encl_excl <- left_join(info_placettes_encl_excl, cwm,
+                                       by = "Id_EE")
+```
+
+
 ```{r data editing}
+#conversion de l'exposition en deux composantes continues 
+info_placettes_encl_excl <- info_placettes_encl_excl %>%
+  mutate(
+    EXPO_rad = EXPO * pi / 180,
+    EXPO_NS = cos(EXPO_rad),   # "nordicité" : +1 = plein nord, -1 = plein sud
+    EXPO_EO = sin(EXPO_rad)    # "orientalité" : +1 = plein est, -1 = plein ouest
+  )
+
 info_placettes_encl_excl_sf <- st_as_sf(info_placettes_encl_excl,
                                         coords = c("XL93_approx", "YL93_approx"),
                                         crs = 2154
@@ -59,19 +111,53 @@ info_placettes_encl_excl_sf <- st_as_sf(info_placettes_encl_excl,
 
 #jointure de la table info à la table des pertes
 perte_biomasse_encl_excl_sf <- left_join(info_placettes_encl_excl_sf, perte_biomasse_encl_excl, by = 'Id_EE')
+
+#remplacement des valeurs vides par des 0 pour les surfaces et proportions
+perte_biomasse_encl_excl_sf <- perte_biomasse_encl_excl_sf %>%
+  mutate(across(c(PROP_FORET_250, PROP_FORET_500, SURF_BAT_250, SURF_BAT_500), ~ replace_na(.x, 0)))
+
 ```
 
-Localisation des points
 
 ```{r}
-ggplot(data = info_placettes_encl_excl_sf) +
-  geom_sf(data = pnr_aubrac, fill = "white", color = "black", size = 1) +
-  geom_sf()
+#calcul mnt
+slope   <- terrain(mnt_25, v = "slope", unit = "radians")
+aspect  <- terrain(mnt_25, v = "aspect", unit = "radians")
+hillsh  <- shade(slope, aspect, angle = 45, direction = 315)
+
+# ajout de la pente dans info_placettes_encl_excl
+points_vect <- vect(perte_biomasse_encl_excl_sf)
+slope_vals <- terra::extract(slope, points_vect)
+perte_biomasse_encl_excl_sf$PENTE <- slope_vals$slope
 ```
 
-### Analyses
+# Localisation des points
 
-## Statistiques descriptives
+```{r}
+#calcul de l'emprise des points pour le zoom de la carte
+bbox_pts <- st_bbox(info_placettes_encl_excl_sf)
+marge <- 0.1  # 10% de marge, à ajuster
+dx <- (bbox_pts["xmax"] - bbox_pts["xmin"]) * marge
+dy <- (bbox_pts["ymax"] - bbox_pts["ymin"]) * marge
+
+xlim <- c(bbox_pts["xmin"] - dx, bbox_pts["xmax"] + dx)
+ylim <- c(bbox_pts["ymin"] - dy, bbox_pts["ymax"] + dy)
+
+hillsh_crop <- crop(hillsh, ext(xlim[1], xlim[2], ylim[1], ylim[2]))
+```
+
+
+```{r}
+ggplot() +
+  geom_spatraster(data = hillsh_crop, show.legend = FALSE) +
+  scale_fill_gradient(low = "grey", high = "white") +
+  geom_sf(data = pnr_aubrac, fill = NA, color = "black", linewidth = 1) +
+  geom_sf(data = info_placettes_encl_excl_sf) +
+  coord_sf(xlim = xlim, ylim = ylim, expand = FALSE) +
+  theme_classic()
+```
+
+### Statistiques descriptives
 
 # Visualisation des pertes par enclos
 
@@ -85,7 +171,7 @@ ggplot(data = perte_biomasse_encl_excl,
 #retrait des outliers ?
 ```
 
-Distribution des pertes
+# Distribution des pertes
 
 ```{r}
 ggplot(data = perte_biomasse_encl_excl,
@@ -137,15 +223,20 @@ t.test(perte_biomasse_encl_excl$mf_tot_enclos,
        perte_biomasse_encl_excl$mf_tot_exclos,
        paired = TRUE)
 
+wilcox.test(perte_biomasse_encl_excl$mf_tot_enclos,
+       perte_biomasse_encl_excl$mf_tot_exclos,
+       paired = TRUE,
+       exact = F)
+
 ```
-Les différences de moyennes entre enclos et exclos sont significatives.
+Les différences des moyennes de biomasse entre enclos et exclos sont significatives.
 
 
-## Effets temporels
+### Analyses temporelles
 
-# Comparaison des pertes en biomasses selon les différentes années
+## Comparaison des pertes en biomasses selon les différentes années
 
-Évolution des pertes
+# Évolution des pertes
 
 ```{r graph, echo=FALSE}
 ggplot(perte_biomasse_encl_excl,
@@ -156,14 +247,16 @@ ggplot(perte_biomasse_encl_excl,
   theme_minimal()
 ```
 
-Moyenne des pertes par année
+
+# Moyenne des pertes par année
 
 ```{r}
-ggplot(perte_biomasse_encl_excl,
+p1 <- ggplot(perte_biomasse_encl_excl[which(perte_biomasse_encl_excl$annee != '2026'),],
        aes(x = as.factor(annee), y = 100*pertes)) +
   geom_boxplot() +
-  labs(x = "Année", y = "Pertes en biomasse (%)", title = "Évolution des moyennes annuelles des pertes fourragères attribuées aux cervidés") +
-  theme_minimal()
+  labs(x = "Année", y = "Pertes en biomasse (%)") +
+  theme_classic()
+p1
   
 #à saint-chély
 ggplot(perte_biomasse_encl_excl_sf[perte_biomasse_encl_excl_sf$commune == "St Chély d'Aubrac",],
@@ -171,11 +264,30 @@ ggplot(perte_biomasse_encl_excl_sf[perte_biomasse_encl_excl_sf$commune == "St Ch
   geom_boxplot() +
   labs(x = "Année", y = "Pertes en biomasse (%)", title = "Évolution des pertes à Saint-Chély d'Aubrac") +
   theme_minimal()
+
+#en 2026
+
+#moyenne des pertes par commune
+ggplot(perte_biomasse_encl_excl_sf,
+       aes(x = commune, y = 100*pertes)) +
+  geom_boxplot() +
+  labs(x = "Année", y = "Pertes en biomasse (%)", title = "Évolution des pertes à Saint-Chély d'Aubrac") +
+  theme_minimal()
 ```
 
-Test de l'effet de l'année sur les pertes
+# Test de l'effet de l'année sur les pertes
 
 ```{r}
+#test de la significativité des différences entre années : kruskal-wallis
+kruskal.test(pertes ~ as.factor(annee), data = perte_biomasse_encl_excl_sf)
+kruskal.test(pertes ~ as.factor(annee), data = perte_biomasse_encl_excl_sf[perte_biomasse_encl_excl_sf$commune == "St Chély d'Aubrac",])
+
+#test de Dunn (non-paramétrique)
+dunn_result <- dunnTest(pertes ~ as.factor(annee),
+                        data = perte_biomasse_encl_excl_sf[perte_biomasse_encl_excl_sf$commune == "St Chély d'Aubrac",],
+                        method="bonferroni")
+dunn_result
+
 #modèle linéaire mixte
 lmm1 <- 
   lmer(pertes ~ as.factor(annee) + (1 | Id_EE), #on attribue l'effet des sites à un effet aléatoire pour l'instant
@@ -184,7 +296,9 @@ lmm1 <-
 summary(lmm1)
 ```
 
-Comparaison des pertes en biomasse avant et après l'augmentation des plans de chasse (2024)
+Nous ne pouvons pas observer de variation significative du pourcentage de pertes selon les années.
+
+# Comparaison des pertes en biomasse avant et après l'augmentation des plans de chasse (2024)
 
 ```{r}
 perte_biomasse_encl_excl_pdc <- perte_biomasse_encl_excl |>
@@ -214,12 +328,11 @@ shapiro.test(perte_biomasse_encl_excl_pdc$pertes[perte_biomasse_encl_excl_pdc$pe
 # two sample t-test
 t.test(pertes ~ periode_pdc, data = perte_biomasse_encl_excl_pdc)
 ```
+
 On ne peut pas rejeter H0, les distributions des groupes ne sont pas significativement différentes.
 On ne peut cependant pas encore faire de conclusion sur l'effet de l'augmentation des plans de chasse.
 
-
-
-# Évolution des productivité
+## Évolution des productivité
 
 ```{r}
 ggplot(data = perte_biomasse_encl_excl) +
@@ -233,7 +346,7 @@ ggplot(data = perte_biomasse_encl_excl) +
   theme_minimal()
 
 #moyenne des productivités par année
-ggplot(data = perte_biomasse_encl_excl) +
+p2 <- ggplot(data = perte_biomasse_encl_excl) +
   geom_boxplot(aes(x = as.factor(annee), y = mf_tot_enclos, colour = "Enclos"),
                position = position_nudge(x = -0.2), width = 0.35) +
   geom_boxplot(aes(x = as.factor(annee), y = mf_tot_exclos, colour = "Exclos"),
@@ -243,7 +356,14 @@ ggplot(data = perte_biomasse_encl_excl) +
     name = ""
   ) +
   labs(x = "", y = "Biomasse (g/m²)") +
-  theme_minimal()
+  theme_classic()
+
+#test de l'effet de l'année sur la productivité
+kruskal.test(mf_tot_enclos ~ as.factor(annee), data = perte_biomasse_encl_excl_sf) #au moins une des années diffère signficativement des autres
+dunn_result <- dunnTest(mf_tot_enclos ~ as.factor(annee),
+                        data = perte_biomasse_encl_excl_sf,
+                        method="bonferroni")
+dunn_result
 
 #test statistique pour les productivités : on veut tester l'effet des années sur les productivités en différenciant le traitement (enclos ou exclos)
 
@@ -264,102 +384,162 @@ lmm3 <-
 summary(lmm3)
 ```
 
-## Analyses spatiales
-
-# Répartition spatiale des pertes en 2025
-
 ```{r}
-perte_biomasse_encl_excl_sf_2025 <- perte_biomasse_encl_excl_sf[perte_biomasse_encl_excl_sf$annee == '2025',]
-
-ggplot(data = perte_biomasse_encl_excl_sf_2025) +
-  geom_spatraster(data = mnt_25) +
-  scale_fill_hypso_tint_c() +  # palette relief
-  geom_sf(data = pnr_aubrac, fill = NA, color = "black", size = 1) +
-  geom_sf(aes(colour = 100*pertes), size = 2) +
-  scale_colour_gradient(
-    low = "green",
-    high = "red",
-    name = "Pertes (%)"
-  ) +
-  theme_minimal()
-
-#zoom sur l'emprise des points
-bbox <- st_bbox(perte_biomasse_encl_excl_sf_2025)
-marge <- 0.1 
-
-mnt_crop <- crop(
-  mnt_25,
-  ext(bbox["xmin"] - marge,
-      bbox["xmax"] + marge,
-      bbox["ymin"] - marge,
-      bbox["ymax"] + marge)
-)
-
-ggplot() +
-  geom_spatraster(data = mnt_crop) +
-  scale_fill_gradient(
-    low  = "white",
-    high = "grey40",
-    name = "Altitude (m)",
-    na.value = "white"
-  ) +
-  geom_sf(
-    data = perte_biomasse_encl_excl_sf_2025,
-    aes(colour = 100 * pertes),
-    size = 2
-  ) +
-  scale_colour_gradient(
-    low  = "green",
-    high = "red",
-    name = "Pertes (%)"
-  ) +
-  coord_sf(
-    xlim = c(bbox["xmin"] - marge, bbox["xmax"] + marge),
-    ylim = c(bbox["ymin"] - marge, bbox["ymax"] + marge),
-    expand = FALSE
-  ) +
-  theme_minimal()
+p1 / p2 +
+  plot_layout(heights = c(1, 1))
 ```
 
 
+### Analyses spatiales
 
-## Analyses multivariées
+# Répartition spatiale des pertes
+
+```{r}
+rep_pertes_spat_temp <- ggplot(perte_biomasse_encl_excl_sf) +
+  geom_spatraster(data = hillsh_crop, show.legend = FALSE) +
+  scale_fill_gradient(low = "lightgrey", high = "white") +
+  ggnewscale::new_scale_fill() +  # nécessaire car on va réutiliser une échelle de couleur
+  geom_sf(aes(color = pertes * 100), size = 2) +
+  scale_color_gradient2(
+    low = "green",
+    mid = "grey",
+    high = "red",
+    midpoint = 0,
+    labels = scales::label_percent(scale = 1)
+  ) +
+  facet_wrap(~ annee, nrow = 2) +
+  theme_classic() +
+  labs(color = "Pertes (%)") +
+  theme(axis.text = element_text(size = 6))
+
+rep_pertes_spat_temp
+
+ggsave(
+  filename = "../../../Résultats/prairies/analyses_spatio_temporelles/rep_pertes_spat_temp.png",
+  plot = rep_pertes_spat_temp,
+  width = 15, height = 5, units = "in", dpi = 300
+)
+```
+
+# Test de l'auto-corrélation spatiale selon les années : existe-il un effet épicentre-périphérie ?
+
+```{r}
+pertes_liste <- split(perte_biomasse_encl_excl_sf, perte_biomasse_encl_excl_sf$annee)
+```
+
+```{r}
+#définition des voisins
+seuil_distance = 1000 #à revoir
+k_voisins = 4
+
+
+resultats_moran <- map(pertes_liste, function(annee_sf) {
+  coords <- st_coordinates(annee_sf)
+  # knea = knearneigh(annee_sf, k_voisins)
+  # neib = knn2nb(knea)
+  neib <- dnearneigh(coords, d1 = 0, d2 = seuil_distance)
+  lw <- nb2listw(neib, style = "W", zero.policy = TRUE)
+
+  annee_sf$lag <- lag.listw(lw, annee_sf$pertes)
+  annee_sf$nb_voisins <- card(neib)
+  n_isoles <- sum(annee_sf$nb_voisins == 0)
+  annee_sf$lag[annee_sf$nb_voisins == 0] <- NA
+
+  M <- lm(lag ~ pertes, annee_sf)
+  MC <- moran.mc(annee_sf$pertes, lw, nsim = 999)
+  moran_val <- moran(annee_sf$pertes, listw = lw, n = length(neib), S0 = Szero(lw))
+
+  list(
+    data = annee_sf,
+    lw = lw,              # <-- on garde lw pour la réutiliser ensuite
+    n_isoles = n_isoles,
+    modele = M,
+    moran = moran_val,
+    moran_test = MC
+  )
+})
+
+iwalk(resultats_moran, function(res, annee) {
+  plot(res$moran_test, main = paste("Test de Moran -", annee), las = 1)
+})
+
+# réutilisation du lw stocké, pas de recalcul
+local_moran <- map(resultats_moran, function(res) {
+  annee_sf <- res$data
+  lw <- res$lw
+
+  MCj <- localmoran_perm(annee_sf$pertes, lw, nsim = 9999)
+  MCj.df <- as.data.frame(MCj)
+
+  annee_sf$p <- MCj.df$`Pr(folded) Sim`
+  annee_sf$Ij <- hotspot(MCj, Prname = "Pr(folded) Sim", cutoff = 0.05, p.adjust = "none")
+  annee_sf$Ij <- factor(annee_sf$Ij, levels = c("High-High", "Low-Low", "Low-High", "High-Low", ">0.05"))
+  annee_sf$Ij[is.na(annee_sf$Ij)] <- ">0.05"
+
+  annee_sf
+})
+
+pertes_combine <- bind_rows(local_moran)
+
+pal1 <- c("#DE2D26", "#FC9272", "#FEE0D2", "grey90")
+
+ggplot() +
+  geom_sf(data = pertes_combine,
+          aes(color = cut(p,
+                           breaks = c(0, 0.001, 0.01, 0.05, 0.5),
+                           include.lowest = TRUE)),
+          size = 2) +
+  scale_color_manual(values = pal1, name = "p-value", drop = FALSE) +
+  facet_wrap(~ annee, nrow = 2) +
+  theme_minimal() +
+  theme(
+    legend.position = "right",
+    legend.text = element_text(size = 8)
+  )
+
+pal2 <- c("red", "blue", "lightblue", "#FC9272", "grey")
+
+repartition_local_moran <- ggplot() +
+  geom_spatraster(data = hillsh_crop, show.legend = FALSE) +
+  scale_fill_gradient(low = "lightgrey", high = "white") +
+  geom_sf(data = pertes_combine,
+          aes(color = Ij),
+          size = 2,) +
+  scale_color_manual(values = pal2, name = "Indices de Moran locaux significatifs", drop = FALSE,
+                     labels = c("Pertes élevées entourées de pertes élevées", "Pertes faibles entourées de pertes faibles", "Pertes faibles entourées de pertes élevées", "Pertes élevées entourées de pertes faibles", "Pas d'autocorrélation significative")) +
+  facet_wrap(~ annee, nrow = 2) +
+  theme_classic() +
+  labs(color = "Indices de Moran locaux significatifs") +
+  theme(axis.text = element_text(size = 6))
+
+ggsave(
+  filename = "../../../Résultats/prairies/analyses_spatio_temporelles/repartition_local_moran.png",
+  plot = repartition_local_moran,
+  width = 15, height = 5, units = "in", dpi = 300
+)
+
+```
+
+
+### Analyses multivariées
 
 # Représentation des pertes selon la productivité
 
 ```{r}
-ggplot(perte_biomasse_encl_excl,
-       aes(x = mf_tot_enclos, y = pertes)) +
+pertes_fn_qualite <- ggplot(perte_biomasse_encl_excl, aes(x = mf_tot_enclos, y = pertes)) +
   geom_point() +
-  theme_minimal()
+  geom_smooth(method = "lm", se = TRUE, color = 'blue') +
+  stat_cor(method = "spearman", label.x.npc = "left", label.y.npc = "top",
+           size = 3, color = "blue") +
+  labs(x = "Productivité (g/m²)", y = "Pertes fourragères (%)") +
+  theme_classic()
+pertes_fn_qualite
 
-ggplot(perte_biomasse_encl_excl,
-       aes(x = mf_tot_exclos, y = pertes)) +
-  geom_point() +
-  theme_minimal()
-
-## regression linéaire simple
-# normalisation des biomasses
-cols_a_standardiser <- c("mf_tot_enclos", "pertes", "mf_tot_exclos")
-
-perte_biomasse_encl_excl_scaled <- perte_biomasse_encl_excl
-
-perte_biomasse_encl_excl_scaled[cols_a_standardiser] <- scale(
-  perte_biomasse_encl_excl[cols_a_standardiser]
+ggsave(
+  filename = "../../../Résultats/prairies/pertes_fn_quantite.png",
+  plot = pertes_fn_qualite,
+  width = 7, height = 5, units = "in", dpi = 300
 )
-
-#modele et test
-lm1 <- lm(data = perte_biomasse_encl_excl, pertes ~ mf_tot_enclos)
-summary(lm1)
-
-lm2 <- lm(data = perte_biomasse_encl_excl, pertes ~ mf_tot_exclos)
-summary(lm2)
-
-cor.test(perte_biomasse_encl_excl$pertes,
-         perte_biomasse_encl_excl$mf_tot_enclos)
-
-cor.test(perte_biomasse_encl_excl$pertes,
-         perte_biomasse_encl_excl$mf_tot_exclos)
 ```
 
 Les prairies les plus productives ne semblent pas être les plus apétentes.
@@ -372,11 +552,358 @@ ggplot(perte_biomasse_encl_excl_sf[which(perte_biomasse_encl_excl_sf$DIST_PLCT_F
        ) +
   geom_point() +
   theme_minimal()
+cor.test(perte_biomasse_encl_excl_sf$AMOYj_PLCT_FRT, perte_biomasse_encl_excl_sf$pertes, method = "spearman")
 
 ```
 
+# Représentation des pertes selon la qualité des prairies
 
-## Analyse floristique
+```{r}
+#calcul des pertes moyennes par prairie
+pertes_moy_prairie <- perte_biomasse_encl_excl_sf %>%
+  st_drop_geometry() %>%
+  group_by(Id_EE) %>%
+  summarise(
+    pertes_moy = mean(pertes, na.rm = TRUE),
+    pertes_sd  = sd(pertes, na.rm = TRUE),
+    across(c(LDMC, SLA, PROP_FORET_250, PROP_PRAIRIES_250, SURF_BAT_250, DIST_COURS_EAU, DIST_DEP, ALTI, PENTE, EXPO_NS, EXPO_EO),
+           first)  # variables fixes, donc identiques pour toutes les années d'une même prairie
+  )
+```
+
+
+```{r}
+
+p1 <- ggplot(pertes_moy_prairie, aes(x = LDMC, y = pertes_moy)) +
+  geom_smooth(method = "lm", se = TRUE, color = 'blue') +
+  stat_cor(method = "spearman", label.x.npc = "left", label.y.npc = "bottom",
+           size = 3, color = "blue") +
+  geom_errorbar(aes(ymin = pertes_moy - pertes_sd, 
+                     ymax = pertes_moy + pertes_sd),
+                width = 0, alpha = 0.3) +
+  geom_point() +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(x = "LDMC", y = "Pertes fourragères moyennes (%)") +
+  theme_classic()
+
+p2 <- ggplot(pertes_moy_prairie, aes(x = SLA, y = pertes_moy)) +
+  geom_smooth(method = "lm", se = TRUE, color = 'blue') +
+  stat_cor(method = "spearman", label.x.npc = "left", label.y.npc = "bottom",
+           size = 3, color = "blue") +
+  geom_errorbar(aes(ymin = pertes_moy - pertes_sd, 
+                     ymax = pertes_moy + pertes_sd),
+                width = 0, alpha = 0.3) +
+  geom_point() +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(x = "SLA", y = "Pertes fourragères moyennes (%)") +
+  theme_classic()
+
+pertes_fn_qualite <- (p1 + p2) +
+  plot_layout(axis_titles = "collect")
+pertes_fn_qualite
+
+ggsave(
+  filename = "../../../Résultats/prairies/pertes_fn_qualite.png",
+  plot = pertes_fn_qualite,
+  width = 7, height = 3, units = "in", dpi = 300
+)
+```
+
+# Représentation des pertes selon la topographie
+
+```{r}
+p1 <- ggplot(pertes_moy_prairie, aes(x = ALTI, y = pertes_moy)) +
+  geom_smooth(method = "lm", se = TRUE, color = 'blue') +
+  stat_cor(method = "spearman", label.x.npc = "left", label.y.npc = "bottom",
+           size = 3, color = "blue") +
+  geom_errorbar(aes(ymin = pertes_moy - pertes_sd, 
+                     ymax = pertes_moy + pertes_sd),
+                width = 0, alpha = 0.3) +
+  geom_point() +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(x = "Altitude (m)", y = "Pertes fourragères moyennes (%)") +
+  theme_classic()
+
+p2 <- ggplot(pertes_moy_prairie, aes(x = PENTE, y = pertes_moy)) +
+  geom_smooth(method = "lm", se = TRUE, color = 'blue') +
+  stat_cor(method = "spearman", label.x.npc = "left", label.y.npc = "bottom",
+           size = 3, color = "blue") +
+  geom_errorbar(aes(ymin = pertes_moy - pertes_sd, 
+                     ymax = pertes_moy + pertes_sd),
+                width = 0, alpha = 0.3) +
+  geom_point() +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(x = "Pente (radians)", y = "Pertes fourragères moyennes (%)") +
+  theme_classic()
+
+p3 <- ggplot(pertes_moy_prairie, aes(x = EXPO_NS, y = pertes_moy)) +
+  geom_smooth(method = "lm", se = TRUE, color = 'blue') +
+  stat_cor(method = "spearman", label.x.npc = "left", label.y.npc = "bottom",
+           size = 3, color = "blue") +
+  geom_errorbar(aes(ymin = pertes_moy - pertes_sd, 
+                     ymax = pertes_moy + pertes_sd),
+                width = 0, alpha = 0.3) +
+  geom_point() +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(x = "Exposition (1 : nord; -1 : sud)", y = "Pertes fourragères moyennes (%)") +
+  theme_classic()
+
+pertes_fn_topo <- (p1 + p2 + p3) +
+  plot_layout(axis_titles = "collect")
+
+ggsave(
+  filename = "../../../Résultats/prairies/pertes_fn_topo.png",
+  plot = pertes_fn_topo,
+  width = 10, height = 4, units = "in", dpi = 300
+)
+```
+
+# Représentation des pertes selon le paysage
+
+```{r}
+pertes_prop_long <- pertes_moy_prairie %>%
+  pivot_longer(cols = c(PROP_FORET_250, PROP_PRAIRIES_250),
+               names_to = "variable", values_to = "proportion")
+
+p1 <- ggplot(pertes_prop_long, aes(x = proportion*100, y = pertes_moy*100, color = variable)) +
+  geom_errorbar(aes(ymin = (pertes_moy - pertes_sd)*100, 
+                     ymax = (pertes_moy + pertes_sd)*100),
+                width = 0, alpha = 0.3) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = TRUE, show.legend = FALSE) +
+  stat_cor(method = "spearman", 
+           aes(color = variable),
+           label.x.npc = c(0.02, 0.65),   # Forêt à gauche, Prairies à droite
+           label.y.npc = c("top", "bottom"),
+           size = 3,
+           show.legend = FALSE) +
+  scale_color_manual(
+    values = c("PROP_FORET_250" = "forestgreen", "PROP_PRAIRIES_250" = "yellow3"),
+    labels = c("PROP_FORET_250" = "Forêt", "PROP_PRAIRIES_250" = "Prairie"),
+    name = ""
+  ) +
+  labs(x = "Éléments paysagers à 250m (%)", y = "Pertes fourragères moyennes (%)") +
+  theme_classic()
+p1
+
+p2 <- ggplot(pertes_moy_prairie, aes(x = SURF_BAT_250, y = pertes_moy*100)) +
+  geom_errorbar(aes(ymin = (pertes_moy - pertes_sd)*100, 
+                     ymax = (pertes_moy + pertes_sd)*100),
+                width = 0, alpha = 0.3) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = TRUE) +
+  stat_cor(method = "spearman", label.x.npc = "left", label.y.npc = "bottom",
+           size = 3, color = "blue") +
+  labs(x = "Surface occupée par les bâtiments (m²)", y = "Pertes fourragères moyennes (%)") +
+  theme_classic()
+
+p3 <- ggplot(pertes_moy_prairie, aes(x = DIST_COURS_EAU, y = pertes_moy*100)) +
+  geom_errorbar(aes(ymin = (pertes_moy - pertes_sd)*100, 
+                     ymax = (pertes_moy + pertes_sd)*100),
+                width = 0, alpha = 0.3) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = TRUE) +
+  stat_cor(method = "spearman", label.x.npc = "left", label.y.npc = "bottom",
+           size = 3, color = "blue") +
+  labs(x = "Distance aux cours d'eau (m)", y = "Pertes fourragères moyennes (%)") +
+  theme_classic()
+
+p4 <- ggplot(pertes_moy_prairie, aes(x = DIST_DEP, y = pertes_moy*100)) +
+  geom_errorbar(aes(ymin = (pertes_moy - pertes_sd)*100, 
+                     ymax = (pertes_moy + pertes_sd)*100),
+                width = 0, alpha = 0.3) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = TRUE) +
+  stat_cor(method = "spearman", label.x.npc = "left", label.y.npc = "bottom",
+           size = 3, color = "blue") +
+  labs(x = "Distance aux routes départementales (m)", y = "Pertes fourragères moyennes (%)") +
+  theme_classic()
+
+pertes_fn_paysage <- ((p1 + p3) / (p2 + p4)) +
+  plot_layout(axis_titles = "collect")
+
+ggsave(
+  filename = "../../../Résultats/prairies/pertes_fn_paysage_ligne.png",
+  plot = pertes_fn_paysage,
+  width = 10, height = 6, units = "in", dpi = 300
+)
+```
+
+
+### Modélisation des pertes : effets des variables paysagères et écologiques
+
+# Effet des caractéristiques de la placette forestière la plus proche
+
+```{r}
+#ajout des variables liées aux placettes forestières proches
+info_placette_aldous_sf <- st_as_sf(
+  info_placette_aldous,
+  coords = c("X_L93", "Y_L93"),   # remplacer par vos vrais noms de colonnes
+  crs = 2154,             # Lambert 93 par ex. — à adapter à votre système
+  remove = FALSE          # garde les colonnes X/Y d'origine
+)
+
+pertes_info_aldous <- perte_biomasse_encl_excl_sf %>%
+  filter(annee == '2026')
+
+idx <- st_nearest_feature(pertes_info_aldous, info_placette_aldous_sf)
+
+distances <- st_distance(
+  pertes_info_aldous,
+  info_placette_aldous_sf[idx, ],
+  by_element = TRUE
+)
+
+pertes_info_aldous <- pertes_info_aldous %>%
+  mutate(
+    dist_placette_proche = as.numeric(distances),
+    AMOYj = info_placette_aldous_sf$AMOYj[idx],
+    STC   = info_placette_aldous_sf$STC[idx],
+    G     = info_placette_aldous_sf$G[idx],
+    NB_FECES = info_placette_aldous_sf$NB_FECES[idx]
+  )
+
+pertes_info_aldous_500 <- pertes_info_aldous[which(pertes_info_aldous$dist_placette_proche < 500),]
+```
+
+
+```{r}
+ggplot(pertes_info_aldous_500, aes(x = AMOYj, y = pertes)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = TRUE, color = 'blue') +
+  stat_cor(method = "spearman", label.x.npc = "left", label.y.npc = "top",
+           size = 3, color = "blue") +
+  labs(x = "Abroutissement moyen de la placette foretière la plus proche (%)", y = "Pertes fourragères (%)") +
+  theme_classic()
+
+model_perte_aldous <- lm(pertes ~ AMOYj + NB_FECES,
+                      data = pertes_info_aldous_500)
+summary(model_perte_aldous)
+```
+
+# Effet des variables paysagères et écologiques
+
+```{r}
+#ajout des valeurs de qualité des prairies dans le data.frame
+pertes_variables <- as.data.frame(perte_biomasse_encl_excl_sf)
+
+variables <- c("tmoy", "tmin", "tmax", "ruth", "etp", "bhc", "prec")
+
+
+
+for (v in variables) {
+  col_cible <- paste0(v, "_", pertes_variables$annee, "_pr")
+  idx_col <- match(col_cible, names(pertes_variables))
+  pertes_variables[[v]] <- pertes_variables[cbind(seq_len(nrow(pertes_variables)), idx_col)]
+}
+
+
+pertes_avec_phyto <- pertes_variables[which(!is.na(pertes_variables$LDMC)), ]
+```
+
+
+
+```{r}
+#acp pour vérifier la colinéarité des variables
+variables_acp_phyto <- pertes_variables[c(62:73, 75, 77, 78, 80, 81, 90)]
+variables_acp <- variables_acp_phyto[-c(14, 15)]
+
+#matrice de corrélation
+correlation = cor(variables_acp)
+corrplot(correlation)
+
+res.pca <- PCA(variables_acp, 
+               ncp = 5,
+               graph = FALSE)
+
+fviz_eig(res.pca, addlabels = TRUE, ylim = c(0,100),
+         xlab = "Composantes principales",
+         ylab = "Pourcentage de variance expliquée",
+         title = "")
+
+#cercle des corrélations
+fviz_pca_var(res.pca, col.var = "cos2",
+             gradient.cols = c("blue", "orange", "red"),
+             repel = TRUE)
+
+fviz_pca_var(res.pca, axes = c(3,4), col.var = "cos2",
+             gradient.cols = c("blue", "orange", "red"),
+             repel = TRUE)
+```
+
+
+
+```{r}
+ggpairs(pertes_variables[, c(62,63,67,70,73,75,77,84)])
+
+pertes_variables <- pertes_variables %>%
+  mutate(
+    ALTI_s = scale(ALTI)[,1],
+    EXPO_NS_s = scale(EXPO_NS)[,1],
+    PROP_FORET_250_s     = scale(PROP_FORET_500)[,1],
+    PROP_FORET_500_s     = scale(PROP_FORET_500)[,1],
+    PROP_PRAIRIES_250_s  = scale(PROP_PRAIRIES_500)[,1],
+    DIST_DEP_s           = scale(DIST_DEP)[,1],
+    DIST_COURS_EAU_s     = scale(DIST_COURS_EAU)[,1],
+    SURF_BAT_500_s       = scale(SURF_BAT_500)[,1],
+    AMOYj_PLCT_FRT_s     = scale(AMOYj_PLCT_FRT)[,1],
+    LDMC_s               = scale(LDMC)[,1],
+    SLA_s               = scale(SLA)[,1]
+  )
+
+
+model_pertes <- lmer(
+  pertes ~ ALTI + PENTE + EXPO_NS + PROP_FORET_250 + DIST_DEP + DIST_COURS_EAU +
+           SURF_BAT_500 + AMOYj_PLCT_FRT +
+           (1 | Id_EE) + (1 | annee),  data = perte_biomasse_encl_excl_sf,
+  na.action = na.fail
+)
+
+model_pertes <- lme(
+  pertes ~ ALTI + PENTE + EXPO_NS + PROP_FORET_250 + DIST_DEP + DIST_COURS_EAU +
+           SURF_BAT_500 + AMOYj_PLCT_FRT,
+  random = ~1|Id_EE/annee,
+  data = perte_biomasse_encl_excl_sf,
+  na.action = na.fail
+)
+
+summary(model_pertes)
+
+model_phyto_pertes <- lme(
+  pertes ~ LDMC,
+  random = ~1|Id_EE/annee,
+  data = pertes_avec_phyto,
+  na.action = na.fail
+)
+
+model_phyto_pertes <- lmer(
+  pertes ~ LDMC + (1 | Id_EE) + (1 | annee),
+  data = pertes_avec_phyto,
+  na.action = na.fail
+)
+
+summary(model_phyto_pertes)
+
+
+#modele averaging
+options(na.action = "na.fail") # Required for dredge to run
+
+model_pertes_dredge <- dredge(model_pertes, rank = "AICc")
+
+options(na.action = "na.omit") # set back to default
+
+head(model_pertes_dredge)
+nrow(model_pertes_dredge)
+
+top_model <- get.models(model_pertes_dredge, subset = 1)[[1]]
+top_model
+summary(top_model)
+
+summary(model.avg(model_pertes_dredge, subset = delta <= 2))
+```
+
+
+### Analyse floristique
 
 # AFC
 

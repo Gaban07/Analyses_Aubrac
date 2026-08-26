@@ -1,0 +1,12 @@
+library(FD)
+
+releve <- read.csv("releve.txt", header = TRUE, row.names = 1,dec=",",sep="\t")
+trait <- read.csv("trait.txt", header = TRUE, row.names = 1,dec=".",sep="\t")
+
+comm <- releve[, colnames(releve) %in% rownames(trait)]
+traits <- trait[colnames(comm), c("LDMC", "SLA")]
+
+comm <- as.matrix(comm)
+traits <- as.matrix(traits)
+
+cwm <- functcomp(traits, comm)
