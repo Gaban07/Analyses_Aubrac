@@ -542,7 +542,7 @@ ggsave(
 )
 ```
 
-Les prairies les plus productives ne semblent pas être les plus apétentes.
+Les prairies les plus productives ne semblent pas être les plus appétentes.
 
 # Représentation des pertes selon l'abroutissement de la placette forestière la plus proche
 
@@ -848,12 +848,13 @@ pertes_variables <- pertes_variables %>%
     SURF_BAT_500_s       = scale(SURF_BAT_500)[,1],
     AMOYj_PLCT_FRT_s     = scale(AMOYj_PLCT_FRT)[,1],
     LDMC_s               = scale(LDMC)[,1],
-    SLA_s               = scale(SLA)[,1]
+    SLA_s               = scale(SLA)[,1],
+    DIST_LISIERE_s               = scale(DIST_LISIERE)[,1]
   )
 
 
 model_pertes <- lmer(
-  pertes ~ ALTI + PENTE + EXPO_NS + PROP_FORET_250 + DIST_DEP + DIST_COURS_EAU +
+  pertes ~ ALTI + PENTE + EXPO_NS + PROP_FORET_250 + DIST_LISIERE + DIST_DEP + DIST_COURS_EAU +
            SURF_BAT_500 + AMOYj_PLCT_FRT +
            (1 | Id_EE) + (1 | annee),  data = perte_biomasse_encl_excl_sf,
   na.action = na.fail
