@@ -10,7 +10,8 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 ```{r packages, include=FALSE}
-install.packages("ggpplot2", "tidyr", "dplyr", "readxl", "openxlsx", "sf", "cowplot", "corrplot", "FactoMineR", "factoextra", "spdep", "tmap", "FSA", "multcomp", "multcompView", "MuMIn", "GGally", "glmmTMB", "nlme", "AICcmodavg", "vegan", "stringr", "rstatix", "patchwork", "visreg", "rphylopic")
+install.packages("ggpplot2", "tidyr", "dplyr", "readxl", "openxlsx", "sf", "cowplot", "corrplot", "FactoMineR", "factoextra", "spdep", "tmap", "FSA", "multcomp", "multcompView", "MuMIn", "GGally", "glmmTMB", "nlme", "AICcmodavg", "vegan", "stringr", "rstatix", "patchwork", "visreg", "rphylopic",
+                 "ggrepel")
 
 library(ggplot2)
 library(terra)
@@ -41,6 +42,7 @@ library(ggpubr)
 library(rstatix)
 library(patchwork)
 library(visreg)
+library(ggrepel)
 ```
 
 ```{r set working directory, include=FALSE}
@@ -289,9 +291,9 @@ Indices_abroutissement_pl_esp <- abroutissement %>%
 
 #calcul de l'indice de sélectivité de Jacob (d'après Boulanger et al, 2009)
 Indices_abroutissement_pl_esp <- Indices_abroutissement_pl_esp %>%
-  mutate(Aij = TR / DTj, #proportion de l'espèce i dans le plot j
-         RCij = TR * TA / (100 * CTj), #contribution de l'espèce i à l'abroutissement total de la placette j (= place dans le régime alimentaire)
-         Sij = (RCij - Aij) / (RCij + Aij - 2*(RCij*Aij)) #indice de sélectivité de Jacob
+  mutate(A = TR / DTj, #proportion de l'espèce i dans le plot j
+         RC = TR * TA / (100 * CTj), #contribution de l'espèce i à l'abroutissement total de la placette j (= place dans le régime alimentaire)
+         S = (RC - A) / (RC + A - 2*(RC*A)) #indice de sélectivité de Jacob
          )
 
 #regroupement par placette
@@ -301,19 +303,30 @@ Indices_abroutissement_pl_esp <- Indices_abroutissement_pl_esp %>%
     TRij = mean(TR, na.rm = TRUE),
     TAij = mean(TA, na.rom = TRUE),
     CTij = mean(CT, na.rm = TRUE),
-    Aij = mean(Aij, na.rm = TRUE),
-    RCij = mean(RCij, na.rm = TRUE),
-    Sij = mean(Sij, na.rm = TRUE),
+    Aij = mean(A, na.rm = TRUE),
+    RCij = mean(RC, na.rm = TRUE),
+    Sij = mean(S, na.rm = TRUE),
     .groups = "drop"
   )
 
-#retrait des données n'ayant pas de valeur pour Si, càd Aij = 1 et RCij = 1 donc si une seule espèce est présente
-Indices_abroutissement_pl_esp <- Indices_abroutissement_pl_esp %>%
-  filter(!is.na(Sij))
+# #retrait des données n'ayant pas de valeur pour Si, càd Aij = 1 et RCij = 1 donc si une seule espèce est présente
+# Indices_abroutissement_pl_esp <- Indices_abroutissement_pl_esp %>%
+#   filter(!is.na(Sij))
+# 
+
+#séparatrion du tableau en 2 pour distinguer le régime alimentaire (C) des Boraldes et du plateau
+Indices_abroutissement_pl_esp_zone <- Indices_abroutissement_pl_esp %>%
+  left_join(info_placette %>% select(ID, ZONE2), by = c("IDP" = "ID"))
+
+Indices_abroutissement_pl_esp_boraldes <- Indices_abroutissement_pl_esp_zone %>%
+  filter(ZONE2 %in% c("BORALDE_CENTRE", "BORALDE_OUEST", "BORALDES_EST"))
+
+Indices_abroutissement_pl_esp_plateau <- Indices_abroutissement_pl_esp_zone %>%
+  filter(ZONE2 %in% c("PLATEAU", "PLATEAU_FERME_SUD"))
 
 #filtrage pour retirer les espèces rares et les valeurs de Sij dépassant les bornes [-1:1]
 seuil_filtre = 10
-
+# 
 Indices_abroutissement_pl_esp <- Indices_abroutissement_pl_esp %>%
   group_by(ESPECE) %>%
   filter(n() >= seuil_filtre
@@ -321,33 +334,30 @@ Indices_abroutissement_pl_esp <- Indices_abroutissement_pl_esp %>%
          ) %>%
   ungroup()
 
-
-#tri du tableau pour ne garder que les placettes des boraldes
-Indices_abroutissement_pl_esp_boraldes <- Indices_abroutissement_pl_esp %>%
-  left_join(info_placette %>% select(ID, ZONE), by = c("IDP" = "ID"))
-
-Indices_abroutissement_pl_esp_boraldes <- Indices_abroutissement_pl_esp_boraldes %>%
-  filter(ZONE == 'BORALDES')
-
 #tableau des indices d'abroutissement moyens des espèces
 resumer_indices_esp <- function(df) {
   df %>%
     group_by(ESPECE) %>%
     summarise(
       n = n(),
-      TRi = mean(TRij, na.rm = TRUE),
-      TAi = mean(TAij, na.rm = TRUE),
-      CTi = mean(CTij, na.rm = TRUE),
-      RCi = mean(RCij, na.rm = TRUE),
-      Si = mean(Sij, na.rm = TRUE),
-      sd_Si = sd(Sij, na.rm = TRUE),
-      se_Si = sd_Si / sqrt(n),
+      TRij_moy = mean(TRij, na.rm = TRUE),
+      TRi = sum(TRij, na.rom = TRUE),
+      TAij_moy = mean(TAij, na.rm = TRUE),
+      CTij_moy = mean(CTij, na.rm = TRUE),
+      CTi = sum(CTij, na.rm = TRUE),
+      RCij_moy = mean(RCij, na.rm = TRUE),
+      Sij_moy = mean(Sij, na.rm = TRUE),
+      sd_Sij = sd(Sij, na.rm = TRUE),
+      se_Sij = sd_Sij / sqrt(n),
       .groups = "drop"
-    )
+    ) %>%
+    mutate(RDi = CTi / sum(CTi), #représentativité de l'espèce dans le faciès alimentaire = régime alimentaire local
+           Qi = TRi / sum(TRi)) #représentativité de l'espèce dans le cortège floristique
 }
 
 Indices_abroutissement_esp <- resumer_indices_esp(Indices_abroutissement_pl_esp)
 Indices_abroutissement_esp_boraldes <- resumer_indices_esp(Indices_abroutissement_pl_esp_boraldes)
+Indices_abroutissement_esp_plateau <- resumer_indices_esp(Indices_abroutissement_pl_esp_plateau)
 
 ```
 
@@ -355,38 +365,130 @@ Indices_abroutissement_esp_boraldes <- resumer_indices_esp(Indices_abroutissemen
 # Visualisation des résultats pour l'appétence des espèces
 
 ```{r}
+Indices_abroutissement_esp <- Indices_abroutissement_esp %>%
+  mutate(
+    ESPECE_abr = paste0(
+      str_to_title(str_sub(word(ESPECE, 1), 1, 2)),  # 2 premières lettres du genre, 1ère en maj
+      str_to_lower(str_sub(word(ESPECE, 2), 1, 2))    # 2 premières lettres de l'épithète, en minuscule
+    )
+  )
+
+Indices_abroutissement_esp_boraldes <- Indices_abroutissement_esp_boraldes %>%
+  mutate(
+    ESPECE_abr = paste0(
+      str_to_title(str_sub(word(ESPECE, 1), 1, 2)),  # 2 premières lettres du genre, 1ère en maj
+      str_to_lower(str_sub(word(ESPECE, 2), 1, 2))    # 2 premières lettres de l'épithète, en minuscule
+    )
+  )
+
+Indices_abroutissement_esp_plateau <- Indices_abroutissement_esp_plateau %>%
+  mutate(
+    ESPECE_abr = paste0(
+      str_to_title(str_sub(word(ESPECE, 1), 1, 2)),  # 2 premières lettres du genre, 1ère en maj
+      str_to_lower(str_sub(word(ESPECE, 2), 1, 2))    # 2 premières lettres de l'épithète, en minuscule
+    )
+  )
+
 appetence_especes <- ggplot(data = Indices_abroutissement_esp,
-       aes(x = reorder(ESPECE, -Si), y = Si)) +
-  geom_col() +
-  geom_errorbar(aes(ymin = Si - se_Si, ymax = Si + se_Si), width = 0.2, color = "black") +
-  geom_text(aes(label = paste0("n=", n)), vjust = -0.5, size = 3.5, color = "black") +
+       aes(x = reorder(ESPECE_abr, -Sij_moy), y = Sij_moy)) +
+  geom_col(fill = "white", color = "black") +
+  geom_errorbar(aes(ymin = Sij_moy - se_Sij, ymax = Sij_moy + se_Sij), width = 0.2, color = "black") +
   labs(
     x = NULL,
     y = "Indice de sélectivité de Jacob"
   ) +
-  theme_classic() +
-  theme(
+  theme_classic(base_size = 19) +
+  theme(text = element_text(family = "serif", size = 19),
     axis.text.x = element_text(angle = 45, hjust = 1, face = "italic"),
     panel.grid.minor = element_blank(),
     panel.grid.major.x = element_blank()
   )
+appetence_especes
+
 
 ggsave(
-  filename = "../../../Résultats/foret/appetence_especes.png",
+  filename = "../../../Figures/Analyses/Forêt/appetence_especes.png",
   plot = appetence_especes,
-  width = 7, height = 5, units = "in", dpi = 300
+  width = 6, height = 6, units = "in", dpi = 300, type = "cairo"
 )
 
-shapiro.test(Indices_abroutissement_pl_esp$Sij) #distribution non-normale
-
-#test de la significativité des différences entre espèces : kruskal-wallis
-kruskal.test(Sij ~ ESPECE, data = Indices_abroutissement_pl_esp) #au moins un des groupes diffère signficativement des autres
-
-#test de Dunn (non-paramétrique)
-dunn_result <- dunnTest(Sij ~ ESPECE, data = Indices_abroutissement_pl_esp, method="bonferroni")
-dunn_result
+# 
+# shapiro.test(Indices_abroutissement_pl_esp$Sij) #distribution non-normale
+# 
+# #test de la significativité des différences entre espèces : kruskal-wallis
+# kruskal.test(Sij ~ ESPECE, data = Indices_abroutissement_pl_esp) #au moins un des groupes diffère signficativement des autres
+# 
+# #test de Dunn (non-paramétrique)
+# dunn_result <- dunnTest(Sij ~ ESPECE, data = Indices_abroutissement_pl_esp, method="bonferroni")
+# dunn_result
 
 ```
+
+```{r}
+#abroutissement des espèces en fonction de leur recouvrement
+especes_abrou_rec <- ggplot(data = Indices_abroutissement_esp,
+  aes(x = TRij_moy, y = TAij_moy, label = ESPECE_abr)) +
+  geom_abline(intercept = 0, slope = 1, color = "grey") +
+  geom_point(size = 1) +
+  geom_text_repel(family = "serif", size = 5) +
+  xlim(0, 30) +
+  ylim(0, 45) +
+  labs(
+    x = "Taux de recouvrement moyen (%)",
+    y = "Taux d'abroutissement moyen (%)"
+  ) +
+  theme_classic(base_size = 19) +
+  theme(text = element_text(family = "serif", size = 19))
+
+ggsave(
+  filename = "../../../Figures/Analyses/Forêt/consommation_des_especes/especes_abrou_rec.png",
+  plot = especes_abrou_rec,
+  width = 6, height = 6, units = "in", dpi = 300, type = "cairo"
+)
+
+especes_cortege_regime_boraldes <- ggplot(data = Indices_abroutissement_esp_boraldes %>%
+                                        filter(n >= 4),
+  aes(x = 100*Qi, y = 100*RDi, label = ESPECE_abr)) +
+  geom_abline(intercept = 0, slope = 1, color = "grey") +
+  geom_point(size = 1) +
+  geom_text_repel(family = "serif", size = 5) +
+  xlim(0, 25) +
+  ylim(0, 30) +
+  labs(
+    x = "Représentativité dans le cortège floristique (%)",
+    y = "Représentativité dans le régime alimentaire (%)"
+  ) +
+  theme_classic(base_size = 19) +
+  theme(text = element_text(family = "serif", size = 19))
+
+ggsave(
+  filename = "../../../Figures/Analyses/Forêt/consommation_des_especes/especes_rec_regime_boraldes.png",
+  plot = especes_cortege_regime_boraldes,
+  width = 6, height = 6, units = "in", dpi = 300, type = "cairo"
+)
+
+especes_cortege_regime_plateau <- ggplot(data = Indices_abroutissement_esp_plateau %>%
+                                        filter(n >= 4),
+  aes(x = 100*Qi, y = 100*RDi, label = ESPECE_abr)) +
+  geom_abline(intercept = 0, slope = 1, color = "grey") +
+  geom_point(size = 1) +
+  geom_text_repel(family = "serif", size = 5) +
+  xlim(0, 45) +
+  ylim(0, 60) +
+  labs(
+    x = "Représentativité dans le cortège floristique (%)",
+    y = "Représentativité dans le régime alimentaire (%)"
+  ) +
+  theme_classic(base_size = 19) +
+  theme(text = element_text(family = "serif", size = 19))
+
+ggsave(
+  filename = "../../../Figures/Analyses/Forêt/consommation_des_especes/especes_rec_regime_plateau.png",
+  plot = especes_cortege_regime_plateau,
+  width = 6, height = 6, units = "in", dpi = 300, type = "cairo"
+)  
+```
+
 
 # Ajout des variables liées à la végétation dans le tableau de données
 
@@ -501,6 +603,34 @@ recouvrement_groupes <- phyto_herba_groupes %>%
 info_placette <- info_placette %>%
   left_join(recouvrement_groupes, by = "ID")
 ```
+
+```{r}
+#Composition du cortège floristique selon la région
+info_placette_boraldes <- info_placette %>%
+    filter(ZONE2 %in% c("BORALDE_CENTRE", "BORALDE_OUEST", "BORALDES_EST"))
+
+info_placette_plateau <- info_placette %>%
+    filter(ZONE2 %in% c("PLATEAU", "PLATEAU_FERME_SUD"))
+
+phyto_herba_groupes_boraldes <- phyto_herba_groupes[, c("espece", "groupe", info_placette_boraldes$ID[which(info_placette_boraldes$REAL_PHYTO == "OUI")])]
+phyto_herba_groupes_plateau  <- phyto_herba_groupes[, c("espece", "groupe", info_placette_plateau$ID[which(info_placette_plateau$REAL_PHYTO == "OUI")])]
+
+
+phyto_herba_groupes_boraldes <- phyto_herba_groupes_boraldes %>%
+  mutate(
+    Recouvrement_total = rowSums(select(., -espece, -groupe), na.rm = TRUE),
+    n = rowSums(select(., -espece, -groupe) > 0, na.rm = TRUE)
+  ) %>%
+  relocate(Recouvrement_total, n, .after = groupe)
+
+phyto_herba_groupes_plateau <- phyto_herba_groupes_plateau %>%
+  mutate(
+    Recouvrement_total = rowSums(select(., -espece, -groupe), na.rm = TRUE),
+    n = rowSums(select(., -espece, -groupe) > 0, na.rm = TRUE)
+  ) %>%
+  relocate(Recouvrement_total, n, .after = groupe)
+```
+
 
 ```{r}
 #avec le tableau phyto
@@ -706,7 +836,7 @@ info_placette_sf$Ij[is.na(info_placette_sf$Ij)] <- ">0.05"
 #hotspots et coldspots
 pal2 <- c( "red", "green", "orange", "yellow","grey")
 
-repartition_local_moran <- ggplot() +
+ggplot() +
   geom_sf(data = pnr_aubrac, fill = "white", color = "black", size = 0.5) +
   geom_sf(data = info_placette_sf, 
           aes(color = Ij), 
@@ -719,11 +849,11 @@ repartition_local_moran <- ggplot() +
   ) +
   theme_classic()
 
-ggsave(
-  filename = "../../../Résultats/foret/repartition_spatiale/repartition_local_moran.png",
-  plot = repartition_local_moran,
-  width = 10, height = 8, units = "in", dpi = 300
-)
+# ggsave(
+#   filename = "../../../Résultats/foret/repartition_spatiale/repartition_local_moran.png",
+#   plot = repartition_local_moran,
+#   width = 10, height = 8, units = "in", dpi = 300
+# )
 ```
 
 On peut identifier une zone particulièrement abroutie ainsi que deux zones faiblement touchées.
@@ -731,16 +861,17 @@ On peut identifier une zone particulièrement abroutie ainsi que deux zones faib
 # Test des différences entre zones géographiques
 
 ```{r}
-labels_regions <- c("BORALDE_CENTRE" = "Boralde centre",
-                  "PLATEAU" = "Plateau ouvert",
-                  "BORALDE_OUEST" = "Boralde ouest",
-                  "BORALDES_EST" = "Boraldes est",
-                  "PLATEAU_FERME_NORD" = "Plateau fermé nord",
+labels_regions <- c("BORALDE_CENTRE" = "Boralde\ncentre",
+                  "BORALDE_OUEST" = "Boralde\nouest",
+                  "BORALDES_EST" = "Boraldes\nest",
+                  "PLATEAU" = "Plateau\nouvert",
+                  "PLATEAU_FERME_NORD" = "Plateau fermé\nnord",
+                  "PLATEAU_FERME_SUD" = "Plateau fermé\nsud",
                   "VIADENE" = "Viadène")
 
-info_placette_aldous$ZONE2 <- factor(info_placette_aldous$ZONE2, levels = c("BORALDE_CENTRE", "PLATEAU", "BORALDE_OUEST", "BORALDES_EST", "PLATEAU_FERME_NORD", "VIADENE"))
+info_placette_aldous$ZONE2 <- factor(info_placette_aldous$ZONE2, levels = c("BORALDE_CENTRE", "BORALDE_OUEST", "BORALDES_EST", "PLATEAU", "PLATEAU_FERME_NORD", "PLATEAU_FERME_SUD", "VIADENE"))
 
-couleurs_regions <- c("BORALDE_CENTRE" = "#b6b1ca", "PLATEAU" = "#cad8b4", "PLATEAU_FERME_NORD" = "#8bb837", "VIADENE" = "#dcdd77", "BORALDE_OUEST" = "#88cbe5", "BORALDES_EST" = "#e5926d")
+couleurs_regions <- c("BORALDE_CENTRE" = "#b6b1ca", "PLATEAU" = "#cad8b4", "PLATEAU_FERME_NORD" = "#8bb837", "VIADENE" = "#dcdd77", "BORALDE_OUEST" = "#88cbe5", "BORALDES_EST" = "#e5926d", "PLATEAU_FERME_SUD" = "forestgreen")
 
 ggplot() +
   geom_sf(data = pnr_aubrac, fill = "white", color = "black", size = 0.5) +
@@ -761,23 +892,17 @@ ggplot() +
   geom_sf(data = info_placette_sf[which(info_placette_sf$UNI == 'FEU'),], aes(color = ZONE2)
           ) +
   scale_color_manual(labels = labels_regions, values = couleurs_regions)
+```
 
+```{r}
+#Pour l'a abroutissement moyen (AMOYj)
 
-#vérification de la distribution des groupes
-ggplot() +
-  geom_density(data =  info_placette_aldous,
-               aes(x = AMOYj, color = ZONE2)
-               )
-
-modele_regions <- lm(data = info_placette_aldous,
-                     AMOYj ~ ZONE2)
-par(mfrow=c(2,2))
-plot(modele_regions) #la normalité n'est pas respectée
 
 #test de kruskal-wallis
 kruskal.test(AMOYj ~ ZONE2, data = info_placette_aldous) #au moins un des groupes diffère signficativement des autres
 
 #test de Dunn (non-paramétrique)
+
 dunn_result <- dunnTest(AMOYj ~ ZONE2, data = info_placette_aldous, method="bonferroni")
 dunn_result
 
@@ -797,44 +922,210 @@ label_pos <- info_placette_aldous %>%
   summarise(y_max = max(AMOYj, na.rm = TRUE)) %>%
   left_join(cld, by = "ZONE2")
 
-abrou_moyen_zones <- ggplot() +
+amoyj_moyen_zones <- ggplot() +
   geom_boxplot(data = info_placette_aldous,
                aes(x = ZONE2, y = AMOYj, fill = ZONE2)) +
   geom_text(data = label_pos,
             aes(x = ZONE2, y = y_max * 1.08, label = lettre),
             fontface = "bold", size = 5) +
-  labs(x = "Zone géographique", y = "AMOYj") +
+  labs(x = "Zone géographique", y = "Abroutissement moyen (%)") +
   scale_x_discrete(labels = labels_regions) +
   scale_fill_manual(values = couleurs_regions) +
-  theme_classic()
-  theme(legend.position = 'none')
+  theme_classic(base_size = 19) +
+  theme(text = element_text(family = "serif", size = 19), legend.position = "none")
+amoyj_moyen_zones  
   
 ggsave(
-  filename = "../../../Résultats/prairies/analyses_spatio_temporelles/abrou_moyen_zones.png",
-  plot = abrou_moyen_zones,
+  filename = "../../../Figures/Analyses/Forêt/amoyj_moyen_zones.png",
+  plot = amoyj_moyen_zones,
   width = 10, height = 8, units = "in", dpi = 300
 )
+
+```
+
+```{r}
+#Pour la disponnibilité alimentaire (DTj)
+
+
+#test de kruskal-wallis
+kruskal.test(DTj ~ ZONE2, data = info_placette_aldous) #au moins un des groupes diffère signficativement des autres
+
+#test de Dunn (non-paramétrique)
+
+dunn_result <- dunnTest(DTj ~ ZONE2, data = info_placette_aldous, method="bonferroni")
+dunn_result
+
+
+#ajout des résultats sur la significativité des différences dans le ggplot
+
+pvals <- dunn_result$res$P.adj
+names(pvals) <- gsub(" - ", "-", dunn_result$res$Comparison)
+
+letters_out <- multcompLetters(pvals, threshold = 0.05)
+cld <- data.frame(ZONE2 = names(letters_out$Letters),
+                   lettre = letters_out$Letters,
+                   row.names = NULL)
+
+label_pos <- info_placette_aldous %>%
+  group_by(ZONE2) %>%
+  summarise(y_max = max(DTj, na.rm = TRUE)) %>%
+  left_join(cld, by = "ZONE2")
+
+dtj_moyen_zones <- ggplot() +
+  geom_boxplot(data = info_placette_aldous,
+               aes(x = ZONE2, y = DTj, fill = ZONE2)) +
+  geom_text(data = label_pos,
+            aes(x = ZONE2, y = y_max * 1.08, label = lettre),
+            fontface = "bold", size = 5) +
+  labs(x = "Zone géographique", y = "Disponibilité alimentaire (%)") +
+  scale_x_discrete(labels = labels_regions) +
+  scale_fill_manual(values = couleurs_regions) +
+  theme_classic(base_size = 19) +
+  theme(text = element_text(family = "serif", size = 19), legend.position = "none")
+dtj_moyen_zones  
+  
+ggsave(
+  filename = "../../../Figures/Analyses/Forêt/dtj_moyen_zones.png",
+  plot = dtj_moyen_zones,
+  width = 10, height = 8, units = "in", dpi = 300
+)
+
+```
+
+```{r}
+#test de kruskal-wallis
+kruskal.test(NB_FECES ~ ZONE2, data = info_placette_aldous) #au moins un des groupes diffère signficativement des autres
+
+#test de Dunn (non-paramétrique)
+
+dunn_result <- dunnTest(NB_FECES ~ ZONE2, data = info_placette_aldous, method="bonferroni")
+dunn_result
+
+
+#ajout des résultats sur la significativité des différences dans le ggplot
+
+pvals <- dunn_result$res$P.adj
+names(pvals) <- gsub(" - ", "-", dunn_result$res$Comparison)
+
+letters_out <- multcompLetters(pvals, threshold = 0.05)
+cld <- data.frame(ZONE2 = names(letters_out$Letters),
+                   lettre = letters_out$Letters,
+                   row.names = NULL)
+
+label_pos <- info_placette_aldous %>%
+  group_by(ZONE2) %>%
+  summarise(y_max = max(NB_FECES, na.rm = TRUE)) %>%
+  left_join(cld, by = "ZONE2")
+
+#fréquentation
+feces_moyen_zones <- ggplot() +
+  geom_boxplot(data = info_placette_aldous,
+               aes(x = ZONE2, y = NB_FECES, fill = ZONE2)) +
+  geom_text(data = label_pos,
+            aes(x = ZONE2, y = y_max * 1.08, label = lettre),
+            fontface = "bold", size = 5) +
+  labs(x = "Zone géographique", y = "Nombre de fèces moyen par placette") +
+  scale_x_discrete(labels = labels_regions) +
+  scale_fill_manual(values = couleurs_regions) +
+  theme_classic(base_size = 19) +
+  theme(text = element_text(family = "serif", size = 19), legend.position = "none")
+feces_moyen_zones
+```
+
+
+```{r}
+#entre boraldes et plateau
+info_placette_aldous_boraldes_plateau <- info_placette_aldous %>%
+  filter(ZONE2 %in% c("PLATEAU", "BORALDE_OUEST", "BORALDE_CENTRE", "BORALDES_EST")) %>%
+  mutate(
+    ZONE3 = case_when(
+      ZONE2 == "PLATEAU" ~ "PLATEAU",
+      ZONE2 %in% c("BORALDE_OUEST", "BORALDE_CENTRE", "BORALDES_EST") ~ "BORALDES"
+    ),
+    ZONE3 = factor(ZONE3, levels = c("PLATEAU", "BORALDES"))
+  )
+
+# --- AMOYj ---
+comparaison_amoyj_boraldes_plateau <- ggplot(info_placette_aldous_boraldes_plateau, aes(x = ZONE3, y = AMOYj)) +
+  geom_boxplot() +
+  stat_compare_means(method = "wilcox.test", label = "p.signif", label.x.npc = "center",
+                      label.y = max(info_placette_aldous_boraldes_plateau$AMOYj, na.rm = TRUE) * 1.05) +
+  labs(x = "", y = "Abroutissement moyen (%)") +
+  theme_classic(base_size = 19) +
+  theme(text = element_text(family = "serif", size = 19))
+
+print(wilcox.test(AMOYj ~ ZONE3, data = info_placette_aldous_boraldes_plateau))
+t.test(AMOYj ~ ZONE3, data = info_placette_aldous_boraldes_plateau)
+comparaison_amoyj_boraldes_plateau
+
+ggsave("../../../Figures/Analyses/Forêt/comparaison_amoyj_boraldes_plateau.png",
+       plot = comparaison_amoyj_boraldes_plateau, width = 5, height = 5, units = "in", dpi = 300)
+
+# --- DTj ---
+comparaison_dtj_boraldes_plateau <- ggplot(info_placette_aldous_boraldes_plateau, aes(x = ZONE3, y = DTj)) +
+  geom_boxplot() +
+  stat_compare_means(method = "wilcox.test", label = "p.signif", label.x.npc = "center",
+                      label.y = max(info_placette_aldous_boraldes_plateau$DTj, na.rm = TRUE) * 1.05) +
+  labs(x = "", y = "Recouvrement total par placette (%)") +
+  theme_classic(base_size = 19) +
+  theme(text = element_text(family = "serif", size = 19))
+
+plot(density(info_placette_aldous_boraldes_plateau$DTj, na.rm = TRUE))
+print(wilcox.test(DTj ~ ZONE3, data = info_placette_aldous_boraldes_plateau))
+t.test(DTj ~ ZONE3, data = info_placette_aldous_boraldes_plateau)
+comparaison_dtj_boraldes_plateau
+
+ggsave("../../../Figures/Analyses/Forêt/comparaison_dtj_boraldes_plateau.png",
+       plot = comparaison_dtj_boraldes_plateau, width = 5, height = 5, units = "in", dpi = 300)
+
+# --- CTj ---
+comparaison_ctj_boraldes_plateau <- ggplot(info_placette_aldous_boraldes_plateau, aes(x = ZONE3, y = CTj)) +
+  geom_boxplot() +
+  stat_compare_means(method = "wilcox.test", label = "p.signif", label.x.npc = "center",
+                      label.y = max(info_placette_aldous_boraldes_plateau$CTj, na.rm = TRUE) * 1.05) +
+  labs(x = "", y = "Masse abroutie (%)") +
+  theme_classic(base_size = 19) +
+  theme(text = element_text(family = "serif", size = 19))
+
+plot(density(info_placette_aldous_boraldes_plateau$CTj, na.rm = TRUE))
+print(wilcox.test(CTj ~ ZONE3, data = info_placette_aldous_boraldes_plateau))
+t.test(CTj ~ ZONE3, data = info_placette_aldous_boraldes_plateau)
+comparaison_ctj_boraldes_plateau
+
+ggsave("../../../Figures/Analyses/Forêt/comparaison_ctj_boraldes_plateau.png",
+       plot = comparaison_ctj_boraldes_plateau, width = 5, height = 5, units = "in", dpi = 300)
 ```
 
 
 ## Effet des variables écologiques et paysagères sur la pression d'herbivorie
 
-# Vérifications sur la variable réponse : AMOYj
-
 ```{r}
+#vérifications sur la variable réponse : AMOYj
 hist(info_placette_aldous$AMOYj)
 plot(density(info_placette_aldous$AMOYj))
 shapiro.test(info_placette_aldous$AMOYj) #normalité non verifiée
 ```
 
-# Création de sous-jeux de données par type de peuplement
-
 ```{r}
+# Création de sous-jeux de données par type de peuplement
 info_placette_het <- info_placette_aldous %>%
   filter(info_placette_aldous$UNI == 'HET')
 
 info_placette_feu <- info_placette_aldous %>%
   filter(info_placette_aldous$UNI == 'FEU')
+```
+
+```{r}
+#nouvelles vérifications
+hist(info_placette_het$AMOYj)
+plot(density(info_placette_het$AMOYj))
+shapiro.test(info_placette_het$AMOYj) #normalité non verifiée
+
+hist(info_placette_feu$AMOYj)
+plot(density(info_placette_feu$AMOYj))
+shapiro.test(info_placette_feu$AMOYj) #normalité non verifiée
+
+
 ```
 
 # Relations entre les variables environnementales et l'abroutissement moyen
@@ -1365,123 +1656,48 @@ p3
 cor.test(info_placette_aldous$rec_myrtille_phyto, info_placette_aldous$AMOYj, method = "spearman")
 ```
 
-# Colinéarité des variables
+
+# ACP pour sélectionner les variables les plus pertinentes
 
 ```{r}
-var_modele <- info_placette_aldous[c(4:6, 8:9, 11:14, 24, 25, 28:40, 42:47, 52, 53, 56, 57, 59, 62, 63:67)]
-var_expl <- var_modele[-c(1:2, 36)] #on retire les coordonnées et la variable réponse
-var_expl_num <- var_expl [-c(3, 4, 8, 9, 29)]
+#pour les hêtraies
+var_num <- info_placette_aldous[c(6,8,12:14,28:35,37:39,53,57,58,69,70)]
+var_num_phyto <- var_num[which(!is.na(var_num$rec_myrtille_phyto)),]
 
-#matrice de corrélation
-correlation = cor(var_expl_num)
 
-png(filename = "../../../Résultats/foret/modelisation/general/corrplot.png", 
-    width = 10, height = 10, units = "in", res = 300)
-corrplot(correlation)
-dev.off()
+correlation_num = cor(var_num_phyto)
+corrplot(correlation_num)
 
-#acp
-res.pca <- PCA(var_expl_num, 
+res.pca <- PCA(var_num, 
                ncp = 5,
                graph=FALSE)
-png(filename = "../../../Résultats/foret/modelisation/general/valeurs_propres.png",
-    width = 7, height = 4, units = "in", res = 300)
-fviz_eig(res.pca, addlabels = TRUE, ylim = c(0,100))
-dev.off()
 
-#cercle des corrélations
-png(filename = "../../../Résultats/foret/modelisation/general/cercle_correlation.png", 
-    width = 10, height = 10, units = "in", res = 300)
+
+valeurs_propres <- get_eigenvalue(res.pca)
+valeurs_propres_subset <- valeurs_propres[1:10, ]
+valeurs_propres_subset <- as.data.frame(valeurs_propres_subset)
+max_variance <- max(valeurs_propres_subset$variance.percent)
+
+fviz_eig(res.pca, addlabels = FALSE, 
+         ncp = 10,
+         ylim = c(0, max_variance * 1.15),
+         xlab = "Composantes principales",
+         ylab = "Pourcentage de variance expliquée",
+         title = "") +
+  geom_text(data = valeurs_propres_subset,
+            aes(x = seq_len(10), y = variance.percent, 
+                label = paste0(round(variance.percent, 1), "%")),
+            vjust = -0.5, family = "times", size = 6) +
+  theme_classic() +
+  theme(text = element_text(family = "times", size = 15),
+        axis.title = element_text(family = "times", size = 16),
+        axis.text = element_text(family = "times", size = 15))
+
 fviz_pca_var(res.pca, col.var = "cos2",
              gradient.cols = c("blue", "orange", "red"),
-             repel = TRUE)
-dev.off()
-
-png(filename = "../../../Résultats/foret/modelisation/general/cercle_correlation_axes_3_4.png", 
-    width = 10, height = 10, units = "in", res = 300)
-fviz_pca_var(res.pca, col.var = "cos2", axes = c(3,4),
-             gradient.cols = c("blue", "orange", "red"),
-             repel = TRUE)
-dev.off()
-
-#Le premier axe pourrait traduire l'expositon nord-sud. Le deuxième axe semble être représentatif du gradient altitudinal.
-#les pourcentages de foret et de parcelles agricoles sont inversement corrélés.
-#les températures maximales et moyennes et l'évapotranspiration potentielle sont fortement corrélées. L'altitude est inversement corrélée à ces variables
-
-#nuage des individus : représentativité des individus
-fviz_pca_ind(res.pca, col.ind = "cos2", repel=FALSE, geom="point")
-
-#lien avec le peuplement forestier
-fviz_pca_ind(res.pca, col.ind = info_placette_aldous$PPL, repel=FALSE, geom="point")
-
-#On retrouve les hêtraies et les peuplements de conifères (sapin, épicéa, douglas) dans le champs des valeurs négatives de l'axe 2 du graphique, ce qui correspond à des milieux d'altitude. Les peuplements de feuillus et les châtaigneraies sont situés plus bas en altitude. Les chênaies sont reparties dans une zone correspondant aux valeurs négatives de l'axe 1 et positive de l'axe 2, traduisant une faible altitude et une bonne exposition. Les pinèdes peuvent être retrouvés dans la section des valeurs négatives de l'axe 1, soit des milieux bien exposés.
-
-#lien avec AMOYj
-fviz_pca_ind(res.pca, col.ind = info_placette_aldous$AMOYj, repel=FALSE, geom="point", gradient.cols = c("green", "yellow", "red"))
-
-#cercle des corrélations pour les dimensions 3 et 4
-fviz_pca_var(res.pca, axes = c(3,4))
-
-#L'axe 3 pourrait être représentatif de l'utilisation des sites par les cervidés. Les recouvrement herbacés, de la myrtille et de la ronce étant colinéaires et relativement bien représentés par l'axe 4, ce dernier pourrait traduire les conditions de luminosité.
-
-#nuage des individus
-fviz_pca_ind(res.pca, axes = c(3,4), col.ind = info_placette_aldous$PPL, repel=FALSE, geom="point")
-
-```
-
-
-# ACP par groupe de variable pour sélectionner les plus pertinentes
-
-```{r}
-var_num_clim <- var_modele[c(4, 24:30, 36)]
-res.pca <- PCA(var_num_clim, 
-               ncp = 5,
-               graph=FALSE)
-fviz_eig(res.pca, addlabels = TRUE, ylim = c(0,100))
-fviz_pca_var(res.pca, col.var = "cos2",
-             gradient.cols = c("blue", "orange", "red"),
-             repel = TRUE)
-var_modele <- var_modele[-c(25, 27:30)] #on ne conserve que l'altitude, les précipitations et le bilan hydrique climatique
-
-var_num_paysage <- var_modele[c(12:15, 20, 31)]
-res.pca <- PCA(var_num_paysage, 
-               ncp = 5,
-               graph=FALSE)
-fviz_eig(res.pca, addlabels = TRUE, ylim = c(0,100))
-fviz_pca_var(res.pca, col.var = "cos2",
-             gradient.cols = c("blue", "orange", "red"),
-             repel = TRUE)
-var_modele <- var_modele[-c(12,14,15,20)] #on ne garde que la proportion de foret dans les 500 mètres
-
-var_num_dispo <- var_modele[c(9, 26:32)] #variables sur la disponibilité alimentaire
-res.pca <- PCA(var_num_dispo, 
-               ncp = 5,
-               graph=FALSE)
-fviz_eig(res.pca, addlabels = TRUE, ylim = c(0,100))
-fviz_pca_var(res.pca, col.var = "cos2",
-             gradient.cols = c("blue", "orange", "red"),
-             repel = TRUE)
-var_modele <- var_modele[-c(29:32)]
-
-var_num_routes <- var_modele[c(13, 14, 27)] #variables sur les routes départementales et communales
-res.pca <- PCA(var_num_routes, 
-               ncp = 5,
-               graph=FALSE)
-fviz_eig(res.pca, addlabels = TRUE, ylim = c(0,100))
-fviz_pca_var(res.pca, col.var = "cos2",
-             gradient.cols = c("blue", "orange", "red"),
-             repel = TRUE)
-var_modele <- var_modele[-c(14, 15)] #on garde la distance aux départementales pour des raisons biologiques (potentiellement plus d'effet que la distance aux communales)
-
-var_num_bats <- var_modele[c(15:17, 25)] #variables sur les batiments
-res.pca <- PCA(var_num_bats, 
-               ncp = 5,
-               graph=FALSE)
-fviz_eig(res.pca, addlabels = TRUE, ylim = c(0,100))
-fviz_pca_var(res.pca, col.var = "cos2",
-             gradient.cols = c("blue", "orange", "red"),
-             repel = TRUE)
-var_modele <- var_modele[-c(15, 16)] #on retire la distance aux batiments qui est moins cohérente que la surface (effet spatiale où l'abroutissement est concentré dans des zones morcellées)
+             repel = TRUE,
+             labelsize = 4) +   # taille du texte des variables
+  theme(text = element_text(family = "times", size = 16))
 ```
 
 
@@ -1498,36 +1714,33 @@ info_placette_aldous_glmm$log_AMOYj <- log(info_placette_aldous_glmm$AMOYj)  # A
 
 #comparaison de l'aic de plusieurs modeles avant le modele averaging
 
-model_logit_trie1 <-lme(
-  logit_AMOYj ~ ALTI + PENTE + STC + PROP_FORET_500 + SURF_BAT_500 + DIST_COURS_EAU + NB_FECES + EXPO_NS + REC_HERBA,
-  random = ~ 1 | ZONE2,
+model_logit_trie1 <- gls(
+  AMOYj ~ ALTI + PENTE + STC + DIST_LISIERE + SURF_BAT_500 + DIST_COURS_EAU + FREQ_CERF + EXPO_NS + REC_ARBO + ZONE2,
   data = info_placette_aldous_glmm,
+  correlation = corExp(form = ~ X_L93 + Y_L93, nugget = TRUE),
   na.action = "na.fail",
   method = "ML"
 )
-summary(model_logit_trie1)
 
-model_logit_trie1 <-gls(
-  logit_AMOYj ~ ALTI + PENTE + STC + PROP_FORET_500 + SURF_BAT_500 + DIST_COURS_EAU + NB_FECES + EXPO_NS + REC_HERBA,
-  correlation = corExp(form = ~ X_L93 + Y_L93),
+model_logit_trie2 <- gls(
+  AMOYj ~ ALTI + PENTE + STC + PROP_PRAIRIES_250 + SURF_BAT_500 + DIST_COURS_EAU + FREQ_CERF + EXPO_NS + REC_ARBO + ZONE2,
   data = info_placette_aldous_glmm,
+  correlation = corExp(form = ~ X_L93 + Y_L93, nugget = TRUE),
   na.action = "na.fail",
   method = "ML"
 )
-summary(model_logit_trie1)
 
-info_placette_aldous_phyto_glmm <- info_placette_aldous_glmm[which(info_placette_aldous_glmm$REAL_PHYTO == 'OUI'),]
-
-model_logit_trie2 <- lme(
-  logit_AMOYj ~ ALTI + PENTE + STC + PROP_FORET_500 + SURF_BAT_500 + DIST_COURS_EAU + NB_FECES + EXPO_NS + REC_ARBO,
-  random = ~ 1 | ZONE2,
-  data = info_placette_aldous_phyto_glmm,
+model_logit_trie3 <- gls(
+  AMOYj ~ ALTI + PENTE + STC + DIST_LISIERE + PROP_PRAIRIES_250 + SURF_BAT_500 + DIST_COURS_EAU + FREQ_CERF + EXPO_NS + REC_ARBO + REC_HERBA + ZONE2,
+  data = info_placette_aldous_glmm,
+  correlation = corExp(form = ~ X_L93 + Y_L93, nugget = TRUE),
   na.action = "na.fail",
   method = "ML"
 )
-summary(model_logit_trie2)
+aictab(list(model_logit_trie1, model_logit_trie2, model_logit_trie3))
 
-#on garde model_logit_trie6 qui a la plus faible AIC (difference inférieure à 2 si on supprime plus de variables)
+
+#les modèles n'ont pas une différence d'AIC signficative (<2), on va comparer chacun des modèles (voir Comparaison_modeles.xlsx)
 ```
 
 
@@ -1535,7 +1748,7 @@ summary(model_logit_trie2)
 #modele averaging (méthodo suivie : https://uoftcoders.github.io/rcourse/lec09-model-selection.html)
 options(na.action = "na.fail") # Required for dredge to run
 
-model_logit_dredge <- dredge(model_logit_trie2, rank = "AICc")
+model_logit_dredge <- dredge(model_logit_trie1, rank = "AICc")
 
 options(na.action = "na.omit") # set back to default
 
@@ -1557,24 +1770,39 @@ info_placette_aldous_glmm_het <- info_placette_aldous_glmm %>%
   filter(UNI == "HET")
 info_placette_aldous_phyto_glmm_het <- info_placette_aldous_glmm_het <- info_placette_aldous_glmm_het[which(info_placette_aldous_glmm_het$REAL_PHYTO == 'OUI'),]
 
-
-
-model_logit_trie2_het <- lme(
-  logit_AMOYj ~ ALTI + STC + PROP_PRAIRIES_500 + DIST_LISIERE + SURF_BAT_500 + DIST_COURS_EAU + NB_FECES + EXPO_NS + REC_ARBO,
-  random = ~1|ZONE2,
+model_logit_trie1_het <- gls(
+  AMOYj ~ ALTI + PENTE + STC + DIST_LISIERE + SURF_BAT_500 + DIST_COURS_EAU + FREQ_CERF + EXPO_NS + REC_ARBO + rec_myrtille_phyto + ZONE2,
   data = info_placette_aldous_glmm_het,
+  correlation = corExp(form = ~ X_L93 + Y_L93, nugget = TRUE),
   na.action = "na.fail",
   method = "ML"
 )
 
 model_logit_trie2_het <- gls(
-  logit_AMOYj ~ ALTI + STC + PROP_PRAIRIES_500 + DIST_LISIERE + SURF_BAT_500 + DIST_COURS_EAU + NB_FECES + EXPO_NS + REC_ARBO,
-  correlation = corExp(form = ~ X_L93 + Y_L93, nugget = TRUE),
+  AMOYj ~ ALTI + STC + DIST_LISIERE + SURF_BAT_500 + DIST_COURS_EAU + FREQ_CERF + EXPO_NS + REC_ARBO + rec_myrtille_phyto + ZONE2,
   data = info_placette_aldous_glmm_het,
+  correlation = corExp(form = ~ X_L93 + Y_L93, nugget = TRUE),
   na.action = "na.fail",
   method = "ML"
 )
-summary(model_logit_trie2_het)
+
+model_logit_trie3_het <- gls(
+  AMOYj ~ ALTI + STC + PROP_PRAIRIES_250 + SURF_BAT_500 + DIST_COURS_EAU + FREQ_CERF + EXPO_NS + REC_ARBO + rec_myrtille_phyto + ZONE2,
+  data = info_placette_aldous_glmm_het,
+  correlation = corExp(form = ~ X_L93 + Y_L93, nugget = TRUE),
+  na.action = "na.fail",
+  method = "ML"
+)
+
+model_logit_trie4_het <- gls(
+  AMOYj ~ ALTI + STC + DIST_LISIERE + PROP_PRAIRIES_250 + SURF_BAT_500 + DIST_COURS_EAU + FREQ_CERF + EXPO_NS + REC_ARBO + rec_myrtille_phyto + ZONE2,
+  data = info_placette_aldous_glmm_het,
+  correlation = corExp(form = ~ X_L93 + Y_L93, nugget = TRUE),
+  na.action = "na.fail",
+  method = "ML"
+)
+
+aictab(list(model_logit_trie1_het, model_logit_trie2_het, model_logit_trie3_het, model_logit_trie4_het))
 ```
 
 
@@ -1590,41 +1818,99 @@ nrow(model_logit_dredge_het)
 top_model <- get.models(model_logit_dredge_het, subset = 1)[[1]]
 top_model
 summary(top_model)
+confint(coefficients_moyens) #pas de modele concurrent au top_model ici
 
-summary(model.avg(model_logit_dredge_het, subset = delta <= 2))
+
+coefficients_moyens <- model.avg(model_logit_dredge_het, subset = delta <= 2)
+summary(coefficients_moyens)
 ```
+
+```{r}
+model_het_final <- gls(
+  AMOYj ~ ALTI + FREQ_CERF,
+  data = info_placette_aldous_glmm_het,
+  correlation = corExp(form = ~ X_L93 + Y_L93, nugget = TRUE),
+  na.action = "na.fail",
+  method = "ML"
+)
+summary(model_het_final)
+cor(info_placette_aldous_glmm_het$AMOYj,predict(model_het_final))^2 #R2
+
+#vérification
+par(mfrow = c(1, 2), 
+    family = "serif",      # ou "Times New Roman" si extrafont configuré
+    cex.lab = 1.4,          # taille des titres d'axes
+    cex.axis = 1.2,         # taille des graduations
+    cex.main = 1.5,         # taille du titre
+    mar = c(5, 5, 4, 2))    # marges élargies pour laisser la place au texte plus grand
+
+res_norm <- residuals(model_het_final, type = "normalized")
+valeurs_ajustees <- fitted(model_het_final)
+
+qqnorm(res_norm, main = "Diagramme quantile-quantile",
+       xlab = "Quantiles théoriques", ylab = "Quantiles observés",
+       cex = 1.2)             # taille des points du QQ-plot
+qqline(res_norm, lwd = 2)     # épaisseur de la ligne, plus visible en grand format
+
+plot(valeurs_ajustees, res_norm,
+     xlab = "Valeurs ajustées", ylab = "Résidus normalisés",
+     main = "Résidus vs valeurs ajustées",
+     cex = 1.2)
+abline(h = 0, lty = 2, lwd = 2)
+```
+
 
 # Modélisation pour les mélanges de feuillus
 
 ```{r}
 info_placette_aldous_glmm_feu <- info_placette_aldous_glmm %>%
   filter(UNI == "FEU")
-info_placette_aldous_phyto_glmm_feu <- info_placette_aldous_glmm_feu <- info_placette_aldous_glmm_feu[which(info_placette_aldous_glmm_het$REAL_PHYTO == 'OUI'),]
-
-model_logit_trie1_feu <- lme(
-  logit_AMOYj ~ PENTE + ALTI + STC + PROP_PRAIRIES_500 + DIST_LISIERE + SURF_BAT_500 + DIST_COURS_EAU + NB_FECES + EXPO_NS + REC_ARBO,
-  random = ~1|ZONE2,
-  data = info_placette_aldous_glmm_feu,
-  na.action = "na.fail",
-  method = "ML"
-)
+info_placette_aldous_phyto_glmm_feu <- info_placette_aldous_glmm_feu[which(!is.na(info_placette_aldous_glmm_feu$rec_roncier_phyto)),]
 
 model_logit_trie1_feu <- gls(
-  logit_AMOYj ~ PENTE + ALTI + STC + PROP_PRAIRIES_500 + DIST_LISIERE + SURF_BAT_500 + DIST_COURS_EAU + NB_FECES + EXPO_NS + REC_ARBO,
+  AMOYj ~ ALTI + PENTE + STC + DIST_LISIERE + SURF_BAT_500 + DIST_COURS_EAU + FREQ_CERF + EXPO_NS + REC_ARBO + rec_roncier_phyto + ZONE2,
+  data = info_placette_aldous_phyto_glmm_feu,
   correlation = corExp(form = ~ X_L93 + Y_L93, nugget = TRUE),
-  data = info_placette_aldous_glmm_feu,
   na.action = "na.fail",
   method = "ML"
 )
 summary(model_logit_trie1_feu)
 
+model_logit_trie2_feu <- gls(
+  AMOYj ~ ALTI + STC + DIST_LISIERE + SURF_BAT_500 + DIST_COURS_EAU + FREQ_CERF + EXPO_NS + REC_ARBO + rec_roncier_phyto + ZONE2,
+  data = info_placette_aldous_phyto_glmm_feu,
+  correlation = corExp(form = ~ X_L93 + Y_L93, nugget = TRUE),
+  na.action = "na.fail",
+  method = "ML"
+)
+summary(model_logit_trie2_feu)
+
+aictab(list(model_logit_trie1a_feu, model_logit_trie1b_feu))
+
+model_logit_trie3_feu <- gls(
+  AMOYj ~ ALTI + STC + PROP_PRAIRIES_250 + SURF_BAT_500 + DIST_COURS_EAU + FREQ_CERF + EXPO_NS + REC_ARBO + rec_roncier_phyto + ZONE2,
+  data = info_placette_aldous_phyto_glmm_feu,
+  correlation = corExp(form = ~ X_L93 + Y_L93, nugget = TRUE),
+  na.action = "na.fail",
+  method = "ML"
+)
+
+model_logit_trie4_feu <- gls(
+  AMOYj ~ ALTI + STC + DIST_LISIERE + PROP_PRAIRIES_250 + SURF_BAT_500 + DIST_COURS_EAU + FREQ_CERF + EXPO_NS + REC_ARBO + rec_roncier_phyto + ZONE2,
+  data = info_placette_aldous_phyto_glmm_feu,
+  correlation = corExp(form = ~ X_L93 + Y_L93, nugget = TRUE),
+  na.action = "na.fail",
+  method = "ML"
+)
+
+aictab(list(model_logit_trie1_feu, model_logit_trie2_feu, model_logit_trie3_feu, model_logit_trie4_feu))
 ```
 
 
 ```{r}
 #modele averaging
 options(na.action = "na.fail") # Required for dredge to run
-model_log_dredge_feu <- dredge(model_logit_trie1_feu, rank = "AICc")
+model_log_dredge_feu <- dredge(model_logit_trie2_feu, rank = "AICc")
 options(na.action = "na.omit") # set back to default
 
 head(model_log_dredge_feu)
@@ -1634,8 +1920,45 @@ top_model <- get.models(model_log_dredge_feu, subset = 1)[[1]]
 top_model
 summary(top_model)
 
-summary(model.avg(model_log_dredge_feu, subset = delta <= 2))
+coefficients_moyens <- model.avg(model_log_dredge_feu, subset = delta <= 2)
+summary(coefficients_moyens)
+confint(coefficients_moyens, full = TRUE)
 ```
+
+```{r}
+model_feu_final <- gls(
+  AMOYj ~ DIST_LISIERE + EXPO_NS + rec_roncier_phyto,
+  data = info_placette_aldous_phyto_glmm_feu,
+  correlation = corExp(form = ~ X_L93 + Y_L93, nugget = TRUE),
+  na.action = "na.fail",
+  method = "ML"
+)
+summary(model_feu_final)
+cor(info_placette_aldous_phyto_glmm_feu$AMOYj,predict(model_feu_final))^2 #R2
+
+#vérification
+par(mfrow = c(1, 2), 
+    family = "serif",      # ou "Times New Roman" si extrafont configuré
+    cex.lab = 1.4,          # taille des titres d'axes
+    cex.axis = 1.2,         # taille des graduations
+    cex.main = 1.5,         # taille du titre
+    mar = c(5, 5, 4, 2))    # marges élargies pour laisser la place au texte plus grand
+
+res_norm <- residuals(model_feu_final, type = "normalized")
+valeurs_ajustees <- fitted(model_feu_final)
+
+qqnorm(res_norm, main = "Diagramme quantile-quantile",
+       xlab = "Quantiles théoriques", ylab = "Quantiles observés",
+       cex = 1.2)             # taille des points du QQ-plot
+qqline(res_norm, lwd = 2)     # épaisseur de la ligne, plus visible en grand format
+
+plot(valeurs_ajustees, res_norm,
+     xlab = "Valeurs ajustées", ylab = "Résidus normalisés",
+     main = "Résidus vs valeurs ajustées",
+     cex = 1.2)
+abline(h = 0, lty = 2, lwd = 2)
+```
+
 
 # Modélisation de l'abroutissement spécifique
 
@@ -1677,257 +2000,181 @@ info_placette <-
 # Relation entre fréquentation par les cervidés et recouvrement de la végétation
 
 ```{r}
-#strate herbacée
-plot(info_placette$NB_FECES, info_placette$REC_HERBA)
-cor.test(info_placette$NB_FECES, info_placette$REC_HERBA, method = "spearman")
+#création d'un indice de fréquentation plus précis (niveau supplémentaire avec peu de données)
+info_placette <- info_placette %>%
+  mutate(
+    FREQ_CERF2 = factor(
+      case_when(
+        NB_FECES == 0 ~ "Faible",
+        NB_FECES %in% c(1, 2) ~ "Moyenne",
+        NB_FECES >= c(3, 4) ~ "Forte",
+        NB_FECES >= 5 ~ "Très forte"
+      ),
+      levels = c("Faible", "Moyenne", "Forte", "Très forte")
+    )
+  )
+```
 
-info_placette$logit_HERBA <- log(info_placette$REC_HERBA/100 / (1 - info_placette$REC_HERBA/100))
 
-model_rec_herba_feces <- gls(
-  REC_HERBA ~ NB_FECES,
-  data = info_placette,
-  correlation = corExp(form = ~ X_L93 + Y_L93, nugget = TRUE),
-  method = "REML"
-)
-summary(model_rec_herba_feces)
+```{r}
+#boxplots
 
-##par groupe d'espèces
-#graminoides (graminées, cyperacées et juncacées)
+taille_texte <- 16  # base augmentée pour lisibilité en 300 dpi
 
-info_placette_aldous_phyto <- info_placette_aldous %>%
-  filter(REAL_PHYTO == "OUI")
+# Mise en forme longue (une seule fois, sur le jeu complet)
+info_placette_herba_long <- info_placette %>%
+  pivot_longer(cols = c(graminoides, ligneux, autres_herbacees),
+               names_to = "groupe",
+               values_to = "recouvrement") %>%
+  mutate(groupe = factor(groupe, levels = c("graminoides", "ligneux", "autres_herbacees")))
 
-ggplot() +
-  geom_point(data = info_placette_het,
-             aes(x = NB_FECES, y = graminoides, color = "Hêtraies")) +
-  geom_point(data = info_placette_feu,
-             aes(x = NB_FECES, y = graminoides, color = "Mélanges de feuillus")) +
-  scale_color_manual(values = c("Hêtraies" = "forestgreen", "Mélanges de feuillus" = "blue"), name = "") +
-  geom_smooth(data = info_placette_het,
-              aes(x = NB_FECES, y = graminoides, color = "Hêtraies"),
-              method = "lm", se = TRUE) +
-  geom_smooth(data = info_placette_feu,
-              aes(x = NB_FECES, y = graminoides, color = "Mélanges de feuillus"),
-              method = "lm", se = TRUE) +
-  stat_cor(data = info_placette_het,
-           aes(x = NB_FECES, y = graminoides, color = "Hêtraies"),
-           method = "spearman", label.x.npc = "left", label.y.npc = 0.95,
-           size = 3) +
-  stat_cor(data = info_placette_feu,
-           aes(x = NB_FECES, y = graminoides, color = "Mélanges de feuillus"),
-           method = "spearman", label.x.npc = "left", label.y.npc = 0.85,
-           size = 3) +
-  labs(x = "Nombre de fecès",
-       y = "Recouvrement des graminoïdes (%)") +
-theme_classic()
+# Sous-jeux de données
+info_placette_herba_long_het <- info_placette_herba_long %>% filter(UNI == "HET")
+info_placette_herba_long_feu <- info_placette_herba_long %>% filter(UNI == "FEU")
 
-model_rec_grami_feces <- lme(
-  graminoides ~ NB_FECES + REC_ARBO,
-  data = info_placette_aldous %>%
-    filter(REAL_PHYTO == "OUI"),
-  random = ~1|ZONE2,
-  method = "REML"
-)
-summary(model_rec_grami_feces)
+info_placette_het <- info_placette %>% filter(UNI == "HET")
+info_placette_feu <- info_placette %>% filter(UNI == "FEU")
 
-model_rec_grami_feces_carre <- lme(
-  graminoides ~ I(NB_FECES^2) + REC_ARBO,
-  data = info_placette_aldous %>%
-    filter(REAL_PHYTO == "OUI"),
-  random = ~1|ZONE2,
-  method = "REML"
-)
-summary(model_rec_grami_feces_carre)
 
-model_rec_grami_feces_het <- lme(
-  graminoides ~ NB_FECES + REC_ARBO,
-  data = info_placette_het %>%
-    filter(REAL_PHYTO == "OUI"),
-  random = ~1|ZONE2,
-  method = "REML"
-)
-summary(model_rec_grami_feces_het)
+# Fonction qui construit et exporte la figure pour un jeu de données
+faire_figure <- function(data_herba_long, data_placette, nom_fichier) {
 
-model_rec_grami_feces_carre_het <- lme(
-  graminoides ~ I(NB_FECES^2) + REC_ARBO,
-  data = info_placette_het %>%
-    filter(REAL_PHYTO == "OUI"),
-  random = ~1|ZONE2,  method = "REML"
-)
-summary(model_rec_grami_feces_carre_het)
+  labels_freq <- c("Fréquentation faible"   = "Faible",
+                   "Fréquentation moyenne"  = "Moyenne",
+                   "Fréquentation forte"    = "Forte")
 
-model_rec_grami_feces_feu <- lme(
-  graminoides ~ NB_FECES + REC_ARBO,
+  theme_commun <- theme_classic() +
+    theme(text       = element_text(family = "serif", size = taille_texte),
+          axis.title = element_text(size = taille_texte + 2),
+          axis.text  = element_text(size = taille_texte))
+
+  p1 <- ggplot(data_herba_long %>% filter(recouvrement < 100),
+               aes(x = factor(FREQ_CERF), y = recouvrement, fill = groupe)) +
+    geom_boxplot(position = position_dodge(width = 0.8), width = 0.6) +
+    labs(x = "Fréquentation par les cervidés",
+         y = "Recouvrement de la strate herbacée (%)",
+         fill = "") +
+    scale_fill_manual(values = c("graminoides"      = "#7CAE00",
+                                 "ligneux"          = "#8B4513",
+                                 "autres_herbacees" = "#00BFC4"),
+                      limits = c("graminoides", "ligneux", "autres_herbacees"),
+                      labels = c("graminoides"      = "Graminoïdes",
+                                 "ligneux"          = "Ligneux",
+                                 "autres_herbacees" = "Autres herbacées")) +
+    scale_x_discrete(labels = labels_freq) +
+    theme_commun +
+    theme(legend.text = element_text(size = taille_texte))
+
+  p2 <- ggplot(data_placette, aes(x = factor(FREQ_CERF), y = REC_ARBU)) +
+    geom_boxplot(fill = "#8B4513", width = 0.6) +
+    labs(x = "Fréquentation par les cervidés",
+         y = "Recouvrement de la strate arbustive (%)") +
+    scale_x_discrete(labels = labels_freq) +
+    theme_commun
+
+  # Légende commune extraite de p1
+  legende_commune <- get_legend(
+    p1 + theme(legend.position = "right",
+               legend.box.margin = margin(0, 0, 0, 12))
+  )
+
+  # Côte à côte, sans légende individuelle
+  graphiques <- plot_grid(p1 + theme(legend.position = "none"),
+                          p2 + theme(legend.position = "none"),
+                          nrow = 1, align = "v", axis = "lr")
+
+  figure_finale <- plot_grid(graphiques, legende_commune,
+                             ncol = 2, rel_widths = c(1, 0.25))
+
+  # Export en 300 dpi
+  ggsave(nom_fichier, plot = figure_finale,
+         width = 12, height = 6, dpi = 300, units = "in")
+
+  return(figure_finale)
+}
+
+
+# Application aux deux jeux de données
+dossier <- "../../../Figures/Analyses/Forêt/impacts_rec_vegetation/"
+
+figure_het <- faire_figure(info_placette_herba_long_het,
+                           info_placette_het,
+                           paste0(dossier, "recouvrement_strates_het.png"))
+
+figure_feu <- faire_figure(info_placette_herba_long_feu,
+                           info_placette_feu,
+                           paste0(dossier, "recouvrement_strates_feu.png"))
+
+figure_het
+figure_feu
+```
+
+```{r}
+#modeles stat
+
+#graminoides
+model_rec_grami_feces2_feu <- lme(
+  graminoides ~ NB_FECES + I(NB_FECES^2) + REC_ARBO,
   data = info_placette_feu %>%
-    filter(REAL_PHYTO == "OUI"),
-  random = ~1|ZONE2,  method = "REML"
+    filter(REAL_PHYTO == 'OUI'),
+  random = ~1|ZONE2,
+  method = "REML"
 )
-summary(model_rec_grami_feces_feu)
+summary(model_rec_grami_feces2_feu)
 
-model_rec_grami_feces_carre_feu <- lme(
-  graminoides ~ I(NB_FECES^2) + REC_ARBO,
+
+#autres herbacées
+model_rec_aherba_feces <- lme(
+  autres_herbacees ~ NB_FECES + REC_ARBO,
+  data = info_placette %>%
+    filter(REAL_PHYTO == 'OUI'),
+  random = ~1|ZONE2,
+  method = "REML"
+)
+summary(model_rec_aherba_feces)
+
+model_rec_aherba2_feces <- lme(
+  autres_herbacees ~ NB_FECES + I(NB_FECES^2) + REC_ARBO,
+  data = info_placette %>%
+    filter(REAL_PHYTO == 'OUI'),
+  random = ~1|ZONE2,
+  method = "REML"
+)
+summary(model_rec_aherba2_feces)
+
+model_rec_aherba2_feces_feu <- lme(
+  autres_herbacees ~ NB_FECES + I(NB_FECES^2) + REC_ARBO,
   data = info_placette_feu %>%
-    filter(REAL_PHYTO == "OUI"),
-  random = ~1|ZONE2,  method = "REML"
+    filter(REAL_PHYTO == 'OUI'),
+  random = ~1|ZONE2,
+  method = "REML"
 )
-summary(model_rec_grami_feces_carre_feu)
+summary(model_rec_aherba2_feces_feu)
 
 
-#ligneux
-
-ggplot() +
-  geom_point(data = info_placette_het,
-             aes(x = NB_FECES, y = ligneux, color = "Hêtraies")) +
-  geom_point(data = info_placette_feu,
-             aes(x = NB_FECES, y = ligneux, color = "Mélanges de feuillus")) +
-  scale_color_manual(values = c("Hêtraies" = "forestgreen", "Mélanges de feuillus" = "blue"), name = "") +
-  geom_smooth(data = info_placette_het,
-              aes(x = NB_FECES, y = ligneux, color = "Hêtraies"),
-              method = "lm", se = TRUE) +
-  geom_smooth(data = info_placette_feu,
-              aes(x = NB_FECES, y = ligneux, color = "Mélanges de feuillus"),
-              method = "lm", se = TRUE) +
-  stat_cor(data = info_placette_het,
-           aes(x = NB_FECES, y = ligneux, color = "Hêtraies"),
-           method = "spearman", label.x.npc = "left", label.y.npc = 0.95,
-           size = 3) +
-  stat_cor(data = info_placette_feu,
-           aes(x = NB_FECES, y = ligneux, color = "Mélanges de feuillus"),
-           method = "spearman", label.x.npc = "left", label.y.npc = 0.85,
-           size = 3) +
-  labs(x = "Nombre de fecès",
-       y = "Recouvrement des ligneux dans la strate herbacée (%)") +
-theme_classic()
-
+#ligneux herbacés
 model_rec_ligneux_feces <- lme(
   ligneux ~ NB_FECES + REC_ARBO,
-  data = info_placette_aldous %>%
-    filter(REAL_PHYTO == "OUI"),
+  data = info_placette %>%
+    filter(REAL_PHYTO == 'OUI'),
   random = ~1|ZONE2,
   method = "REML"
 )
 summary(model_rec_ligneux_feces)
 
-model_rec_ligneux_feces_carre <- lme(
-  ligneux ~ NB_FECES + I(NB_FECES^2) + REC_ARBO,
-  data = info_placette_aldous %>%
-    filter(REAL_PHYTO == "OUI"),
-  random = ~1|ZONE2,
-  method = "REML"
-)
-summary(model_rec_ligneux_feces_carre)
-
-model_rec_ligneux_feces_het <- lme(
+#strate arbustive
+model_rec_arbu_feces <- lme(
   ligneux ~ NB_FECES + REC_ARBO,
-  data = info_placette_het %>%
-    filter(REAL_PHYTO == "OUI"),
+  data = info_placette %>%
+    filter(REAL_PHYTO == 'OUI'),
   random = ~1|ZONE2,
   method = "REML"
 )
-summary(model_rec_ligneux_feces_het)
+summary(model_rec_arbu_feces)
 
-model_rec_ligneux_feces_carre_het <- lme(
-  ligneux ~ NB_FECES + I(NB_FECES^2) + REC_ARBO,
-  data = info_placette_het %>%
-    filter(REAL_PHYTO == "OUI"),
-  random = ~1|ZONE2,  method = "REML"
-)
-summary(model_rec_ligneux_feces_carre_het)
 
-model_rec_ligneux_feces_feu <- lme(
-  ligneux ~ NB_FECES + REC_ARBO,
-  data = info_placette_feu %>%
-    filter(REAL_PHYTO == "OUI"),
-  random = ~1|ZONE2,  method = "REML"
-)
-summary(model_rec_ligneux_feces_feu)
-
-model_rec_ligneux_feces_carre_feu <- lme(
-  ligneux ~ NB_FECES + I(NB_FECES^2) + REC_ARBO,
-  data = info_placette_feu %>%
-    filter(REAL_PHYTO == "OUI"),
-  random = ~1|ZONE2,  method = "REML"
-)
-summary(model_rec_ligneux_feces_feu)
-
-# autres herbacées
-
-ggplot() +
-  geom_point(data = info_placette_het,
-             aes(x = NB_FECES, y = autres_herbacees, color = "Hêtraies")) +
-  geom_point(data = info_placette_feu,
-             aes(x = NB_FECES, y = autres_herbacees, color = "Mélanges de feuillus")) +
-  scale_color_manual(values = c("Hêtraies" = "forestgreen", "Mélanges de feuillus" = "blue"), name = "") +
-  geom_smooth(data = info_placette_het,
-              aes(x = NB_FECES, y = autres_herbacees, color = "Hêtraies"),
-              method = "lm", se = TRUE) +
-  geom_smooth(data = info_placette_feu,
-              aes(x = NB_FECES, y = autres_herbacees, color = "Mélanges de feuillus"),
-              method = "lm", se = TRUE) +
-  stat_cor(data = info_placette_het,
-           aes(x = NB_FECES, y = autres_herbacees, color = "Hêtraies"),
-           method = "spearman", label.x.npc = "left", label.y.npc = 0.95,
-           size = 3) +
-  stat_cor(data = info_placette_feu,
-           aes(x = NB_FECES, y = autres_herbacees, color = "Mélanges de feuillus"),
-           method = "spearman", label.x.npc = "left", label.y.npc = 0.85,
-           size = 3) +
-  labs(x = "Nombre de fecès",
-       y = "Recouvrement des ptéridophytes et dicotylédones (%)") +
-theme_classic()
-
-model_rec_dicot_feces <- lme(
-  autres_herbacees ~ NB_FECES + REC_ARBO,
-  data = info_placette_aldous %>%
-    filter(REAL_PHYTO == "OUI"),
-  random = ~1|ZONE2,
-  method = "REML"
-)
-summary(model_rec_dicot_feces) 
-
-model_rec_dicot_feces_carre <- lme(
-  autres_herbacees ~ NB_FECES + I(NB_FECES^2) + REC_ARBO,
-  data = info_placette_aldous %>%
-    filter(REAL_PHYTO == "OUI"),
-  random = ~1|ZONE2,
-  method = "REML"
-)
-summary(model_rec_dicot_feces_carre) 
-
-model_rec_dicot_feces_het <- lme(
-  autres_herbacees ~ NB_FECES + REC_ARBO,
-  data = info_placette_het %>%
-    filter(REAL_PHYTO == "OUI"),
-  random = ~1|ZONE2,
-  method = "REML"
-)
-summary(model_rec_dicot_feces_het)
-
-model_rec_dicot_feces_carre_het <- lme(
-  autres_herbacees ~ I(NB_FECES)^2 + REC_ARBO,
-  data = info_placette_het %>%
-    filter(REAL_PHYTO == "OUI"),
-  random = ~1|ZONE2,
-  method = "REML"
-)
-summary(model_rec_dicot_feces_carre_het)
-
-model_rec_dicot_feces_feu <- lme(
-  autres_herbacees ~ NB_FECES + REC_ARBO,
-  data = info_placette_feu %>%
-    filter(REAL_PHYTO == "OUI"),
-  random = ~1|ZONE2,  method = "REML"
-)
-summary(model_rec_dicot_feces_feu)
-
-model_rec_dicot_feces_carre_het <- lme(
-  autres_herbacees ~ NB_FECES + I(NB_FECES^2) + REC_ARBO,
-  data = info_placette_het %>%
-    filter(REAL_PHYTO == "OUI"),
-  random = ~1|ZONE2,  method = "REML"
-)
-summary(model_rec_dicot_feces_carre_het)
 ```
+
 
 ```{r}
 #disponibilité des ligneux
@@ -1960,41 +2207,12 @@ summary(model_rec_dispo_feces_feu)
 ```
 
 
-```{r}
-#strate arbustive
-plot(info_placette$NB_FECES, info_placette$REC_ARBU)
-plot(info_placette$NB_FECES, info_placette$logit_ARBU)
-
-cor.test(info_placette$NB_FECES, info_placette$REC_ARBU, method = "spearman")
-
-info_placette$logit_ARBU <- log(info_placette$REC_ARBU/100 / (1 - info_placette$REC_ARBU/100))
-
-model_rec_arbu_feces <- lme(
-  REC_ARBU ~ NB_FECES + REC_ARBO,
-  data = info_placette_aldous,
-  random = ~1|ZONE2,  method = "REML"
-)
-summary(model_rec_arbu_feces)
-
-model_rec_arbu_feces_het <- lme(
-  REC_ARBU ~ NB_FECES + REC_ARBO,
-  data = info_placette_het,
-  random = ~1|ZONE2,  method = "REML"
-)
-summary(model_rec_arbu_feces_het)
-
-model_rec_arbu_feces_feu <- lme(
-  REC_ARBU ~ NB_FECES + REC_ARBO,
-  data = info_placette_feu,
-  random = ~1|ZONE2,  method = "REML"
-)
-summary(model_rec_arbu_feces_feu)
-```
 
 # Relation entre abroutissement et recouvrement de la végétation
 
 ```{r}
 #strate herbacée
+plot()
 info_placette_aldous$logit_HERBA <- log(info_placette_aldous$REC_HERBA/100 / (1 - info_placette_aldous$REC_HERBA/100))
 
 plot(info_placette_aldous$AMOYj, info_placette_aldous$REC_HERBA)
@@ -2474,32 +2692,717 @@ info_placette_aldous_diversite <- info_placette_aldous_diversite[which(info_plac
 
 # Relation entre fréquentation par les cervidés et richesse/diversité
 
+#richesse
 ```{r}
-#strate herbacée
-plot(info_placette_diversite$NB_FECES, info_placette_diversite$richesse_S)
-plot(info_placette_diversite$NB_FECES, info_placette_diversite$shannon_H)
+#feuillus
+info_placette_richesse_long <- info_placette_diversite %>%
+  pivot_longer(cols = c(richesse_graminoides, richesse_ligneux_herba, richesse_dicot_pteri),
+               names_to = "groupe",
+               names_prefix = "richesse_",
+               values_to = "richesse")
+info_placette_richesse_long$groupe <- as.factor(info_placette_richesse_long$groupe)
+levels(info_placette_richesse_long) <- c("graminoides", "ligneux_herba", "dicot_pteri")
 
-cor.test(info_placette_diversite$NB_FECES, info_placette_diversite$richesse_S, method = "spearman")
-cor.test(info_placette_diversite$NB_FECES, info_placette_diversite$shannon_H, method = "spearman")
+info_placette_richesse_long_feu <- info_placette_richesse_long %>%
+  filter(info_placette_richesse_long$UNI == "FEU")
 
-model_rchns_feces <- glm(richesse_S ~ NB_FECES, data = info_placette_diversite, family = "poisson")
-summary(model_rchns_feces)
-par(mfrow=c(2,2))
-plot(model_rchns_feces)
+info_placette_diversite_feu <- info_placette_diversite %>%
+  filter(info_placette_diversite$UNI == "FEU")
+
+taille_texte <- 16  # base augmentée pour lisibilité en 300 dpi
+
+p1 <- ggplot(info_placette_richesse_long_feu, 
+             aes(x = factor(FREQ_CERF), y = richesse, fill = groupe)) +
+  geom_boxplot(position = position_dodge(width = 0.8), width = 0.6) +
+  labs(x = "Fréquentation par les cervidés", 
+       y = "Richesse spécifique (strate herbacée)",
+       fill = "") +
+  scale_fill_manual(values = c("graminoides" = "#7CAE00",
+                                "ligneux_herba" = "#8B4513",
+                                "dicot_pteri" = "#00BFC4"),
+                     limits = c("graminoides", "ligneux_herba", "dicot_pteri"),
+                     labels = c("graminoides" = "Graminoïdes",
+                                "ligneux_herba" = "Ligneux",
+                                "dicot_pteri" = "Autres herbacées")) +
+  scale_x_discrete(labels = c("Fréquentation faible" = "Faible",
+                               "Fréquentation moyenne" = "Moyenne",
+                               "Fréquentation forte" = "Forte")) +
+  theme_classic() +
+  theme(text = element_text(family = "serif", size = taille_texte),
+        axis.title = element_text(size = taille_texte + 2),
+        axis.text = element_text(size = taille_texte),
+        legend.text = element_text(size = taille_texte))
+
+p2 <- ggplot(info_placette_diversite_feu, aes(x = factor(FREQ_CERF), y = richesse_S_arbu)) +
+  geom_boxplot(fill = "#8B4513", width = 0.6) +
+  labs(x = "Fréquentation par les cervidés", y = "Richesse spécifique (strate arbustive") +
+  scale_x_discrete(labels = c("Fréquentation faible" = "Faible",
+                               "Fréquentation moyenne" = "Moyenne",
+                               "Fréquentation forte" = "Forte")) +
+  theme_classic() +
+  theme(text = element_text(family = "serif", size = taille_texte),
+        axis.title = element_text(size = taille_texte + 2),
+        axis.text = element_text(size = taille_texte))
+
+# Extraction de la légende unique depuis p1
+legende_commune <- get_legend(
+  p1 + theme(legend.position = "right", legend.box.margin = margin(0, 0, 0, 12))
+)
+
+# Retirer les légendes individuelles des deux graphiques
+p1_sans_legende <- p1 + theme(legend.position = "none")
+p2_sans_legende <- p2 + theme(legend.position = "none")
+
+# Empiler p1 et p2 côte à côte
+graphiques_empiles <- plot_grid(p1_sans_legende, p2_sans_legende, 
+                                  nrow = 1, align = "v", axis = "lr")
+
+# Ajouter la légende commune à droite de l'ensemble
+figure_finale <- plot_grid(graphiques_empiles, legende_commune, 
+                            ncol = 2, rel_widths = c(1, 0.25))
+
+figure_finale
+
+# Export en 300 dpi
+ggsave("../../../Figures/Analyses/Forêt/impacts_div_vegetation/richesse_strates_feu.png", plot = figure_finale, 
+       width = 12, height = 6, dpi = 300, units = "in")
 ```
 
 ```{r}
+taille_texte <- 16
+
+p1 <- ggplot(info_placette_richesse_long, 
+             aes(x = factor(FREQ_CERF2), y = richesse, fill = groupe)) +
+  geom_boxplot(position = position_dodge(width = 0.8), width = 0.6) +
+  labs(x = "Fréquentation par les cervidés", 
+       y = "Richesse spécifique (strate herbacée)",
+       fill = "") +
+  scale_fill_manual(values = c("graminoides" = "#7CAE00",
+                                "ligneux_herba" = "#8B4513",
+                                "dicot_pteri" = "#00BFC4"),
+                     limits = c("graminoides", "ligneux_herba", "dicot_pteri"),
+                     labels = c("graminoides" = "Graminoïdes",
+                                "ligneux_herba" = "Ligneux",
+                                "dicot_pteri" = "Autres herbacées")) +
+  theme_classic() +
+  theme(text = element_text(family = "serif", size = taille_texte),
+        axis.title = element_text(size = taille_texte + 2),
+        axis.text = element_text(size = taille_texte),
+        legend.text = element_text(size = taille_texte))
+
+p2 <- ggplot(info_placette_diversite, aes(x = factor(FREQ_CERF2), y = richesse_S_arbu)) +
+  geom_boxplot(fill = "#8B4513", width = 0.6) +
+  labs(x = "Fréquentation par les cervidés", y = "Richesse spécifique (strate arbustive") +
+  theme_classic() +
+  theme(text = element_text(family = "serif", size = taille_texte),
+        axis.title = element_text(size = taille_texte + 2),
+        axis.text = element_text(size = taille_texte))
+
+# Extraction de la légende unique depuis p1
+legende_commune <- get_legend(
+  p1 + theme(legend.position = "right", legend.box.margin = margin(0, 0, 0, 12))
+)
+
+# Retirer les légendes individuelles des deux graphiques
+p1_sans_legende <- p1 + theme(legend.position = "none")
+p2_sans_legende <- p2 + theme(legend.position = "none")
+
+# Empiler p1 et p2 côte à côte
+graphiques_empiles <- plot_grid(p1_sans_legende, p2_sans_legende, 
+                                  nrow = 1, align = "v", axis = "lr")
+
+# Ajouter la légende commune à droite de l'ensemble
+figure_finale <- plot_grid(graphiques_empiles, legende_commune, 
+                            ncol = 2, rel_widths = c(1, 0.25))
+
+figure_finale
+
+# Export en 300 dpi
+ggsave("../../../Figures/Analyses/Forêt/impacts_div_vegetation/richesse_strates_freq2.png", plot = figure_finale,
+       width = 12, height = 6, dpi = 300, units = "in")
+```
+
+
+```{r}
+#modeles stat
+
+#graminoides
+model_rchns_grami_feces <- glmer(
+  richesse_graminoides ~ NB_FECES + REC_ARBO + (1|ZONE2),
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI'),
+  family = "poisson"
+)
+summary(model_rchns_grami_feces)
+
+model_rchns_grami_feces2 <- glmer(
+  richesse_graminoides ~ NB_FECES + I(NB_FECES^2) + REC_ARBO + (1|ZONE2),
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI'),
+  family = "poisson"
+)
+summary(model_rchns_grami_feces2)
+
+model_rchns_grami_feces_het <- glmer(
+  richesse_graminoides ~ NB_FECES + REC_ARBO + (1|ZONE2),
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI' & UNI == 'HET'),
+  family = "poisson"
+)
+summary(model_rchns_grami_feces_het)
+
+model_rchns_grami_feces2_het <- glmer(
+  richesse_graminoides ~ NB_FECES + I(NB_FECES^2) + REC_ARBO + (1|ZONE2),
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI' & UNI == 'HET'),
+  family = "poisson"
+)
+summary(model_rchns_grami_feces2_het)
+
+model_rchns_grami_feces_feu <- glmer(
+  richesse_graminoides ~ NB_FECES + REC_ARBO + (1|ZONE2),
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI' & UNI == 'FEU'),
+  family = "poisson"
+)
+summary(model_rchns_grami_feces_feu)
+
+model_rchns_grami_feces2_feu <- glmer(
+  richesse_graminoides ~ NB_FECES + I(NB_FECES^2) + REC_ARBO + (1|ZONE2),
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI' & UNI == 'FEU'),
+  family = "poisson"
+)
+summary(model_rchns_grami_feces2_feu)
+
+
+#autres herbacées
+model_rchns_aherba_feces <- glmer(
+  richesse_dicot_pteri ~ NB_FECES + REC_ARBO + (1|ZONE2),
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI'),
+  family = "poisson"
+)
+summary(model_rchns_aherba_feces)
+
+model_rchns_aherba_feces2 <- glmer(
+  richesse_dicot_pteri ~ NB_FECES + I(NB_FECES^2) + REC_ARBO + (1|ZONE2),
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI'),
+  family = "poisson"
+)
+summary(model_rchns_aherba_feces2)
+
+model_rchns_aherba_feces_het <- glmer(
+  richesse_dicot_pteri ~ NB_FECES + REC_ARBO + (1|ZONE2),
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI' & UNI == 'HET'),
+  family = "poisson"
+)
+summary(model_rchns_aherba_feces_het)
+
+model_rchns_aherba_feces2_het <- glmer(
+  richesse_dicot_pteri ~ NB_FECES + I(NB_FECES^2) + REC_ARBO + (1|ZONE2),
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI' & UNI == 'HET'),
+  family = "poisson"
+)
+summary(model_rchns_aherba_feces2_het)
+
+model_rchns_aherba_feces_feu <- glmer(
+  richesse_dicot_pteri ~ NB_FECES + REC_ARBO + (1|ZONE2),
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI' & UNI == 'FEU'),
+  family = "poisson"
+)
+summary(model_rchns_aherba_feces_feu)
+
+model_rchns_aherba_feces2_feu <- glmer(
+  richesse_dicot_pteri ~ NB_FECES + I(NB_FECES^2) + REC_ARBO + (1|ZONE2),
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI' & UNI == 'FEU'),
+  family = "poisson"
+)
+summary(model_rchns_aherba_feces2_feu)
+
+
+#ligneux herbacés
+model_rchns_ligneuxh_feces <- glmer(
+  richesse_ligneux_herba ~ NB_FECES + REC_ARBO + (1|ZONE2),
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI'),
+  family = "poisson"
+)
+summary(model_rchns_ligneuxh_feces)
+
+model_rchns_ligneuxh_feces2 <- glmer(
+  richesse_ligneux_herba ~ NB_FECES + I(NB_FECES^2) + REC_ARBO + (1|ZONE2),
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI'),
+  family = "poisson"
+)
+summary(model_rchns_ligneuxh_feces2)
+
+model_rchns_ligneuxh_feces_het <- glmer(
+  richesse_ligneux_herba ~ NB_FECES + REC_ARBO + (1|ZONE2),
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI' & UNI == 'HET'),
+  family = "poisson"
+)
+summary(model_rchns_ligneuxh_feces_het)
+
+model_rchns_ligneuxh_feces2_het <- glmer(
+  richesse_ligneux_herba ~ NB_FECES + I(NB_FECES^2) + REC_ARBO + (1|ZONE2),
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI' & UNI == 'HET'),
+  family = "poisson"
+)
+summary(model_rchns_ligneuxh_feces2_het)
+
+model_rchns_ligneuxh_feces_feu <- glmer(
+  richesse_ligneux_herba ~ NB_FECES + REC_ARBO + (1|ZONE2),
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI' & UNI == 'FEU'),
+  family = "poisson"
+)
+summary(model_rchns_ligneuxh_feces_feu)
+
+model_rchns_ligneuxh_feces2_feu <- glmer(
+  richesse_ligneux_herba ~ NB_FECES + I(NB_FECES^2) + REC_ARBO + (1|ZONE2),
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI' & UNI == 'FEU'),
+  family = "poisson"
+)
+summary(model_rchns_ligneuxh_feces2_feu)
+
 #strate arbustive
-plot(info_placette_diversite$NB_FECES, info_placette_diversite$richesse_S_arbu)
-plot(info_placette_diversite$NB_FECES, info_placette_diversite$shannon_H_arbu)
+model_rchns_arbu_feces <- glmer(
+  richesse_S_arbu ~ NB_FECES + REC_ARBO + (1|ZONE2),
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI'),
+  family = "poisson"
+)
+summary(model_rchns_arbu_feces)
 
-cor.test(info_placette_diversite$NB_FECES, info_placette_diversite$richesse_S_arbu, method = "spearman")
-cor.test(info_placette_diversite$NB_FECES, info_placette_diversite$shannon_H_arbu, method = "spearman")
+model_rchns_arbu_feces2 <- glmer(
+  richesse_S_arbu ~ NB_FECES + I(NB_FECES^2) + REC_ARBO + (1|ZONE2),
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI'),
+  family = "poisson"
+)
+summary(model_rchns_arbu_feces2)
 
-model_rchns_feces <- glm(richesse_S_arbu ~ NB_FECES, data = info_placette_diversite, family = "poisson")
-summary(model_rchns_feces)
-par(mfrow=c(2,2))
-plot(model_rchns_feces)
+model_rchns_arbu_feces_het <- glmer(
+  richesse_S_arbu ~ NB_FECES + REC_ARBO + (1|ZONE2),
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI' & UNI == 'HET'),
+  family = "poisson"
+)
+summary(model_rchns_arbu_feces_het)
+
+model_rchns_arbu_feces2_het <- glmer(
+  richesse_S_arbu ~ NB_FECES + I(NB_FECES^2) + REC_ARBO + (1|ZONE2),
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI' & UNI == 'HET'),
+  family = "poisson"
+)
+summary(model_rchns_arbu_feces2_het)
+
+model_rchns_arbu_feces_feu <- glmer(
+  richesse_S_arbu ~ NB_FECES + REC_ARBO + (1|ZONE2),
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI' & UNI == 'FEU'),
+  family = "poisson"
+)
+summary(model_rchns_arbu_feces_feu)
+
+model_rchns_arbu_feces2_feu <- glmer(
+  richesse_S_arbu ~ NB_FECES + I(NB_FECES^2) + REC_ARBO + (1|ZONE2),
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI' & UNI == 'FEU'),
+  family = "poisson"
+)
+summary(model_rchns_arbu_feces2_feu)
+```
+
+
+#shannon
+```{r}
+#boxplots
+info_placette_shannon_long <- info_placette_diversite %>%
+  pivot_longer(cols = c(shannon_graminoides, shannon_ligneux_herba, shannon_dicot_pteri),
+               names_to = "groupe",
+               names_prefix = "shannon_",
+               values_to = "shannon")
+info_placette_shannon_long$groupe <- as.factor(info_placette_shannon_long$groupe)
+levels(info_placette_shannon_long) <- c("graminoides", "ligneux_herba", "dicot_pteri")
+
+taille_texte <- 16  # base augmentée pour lisibilité en 300 dpi
+
+p1 <- ggplot(info_placette_shannon_long, 
+             aes(x = factor(FREQ_CERF), y = shannon, fill = groupe)) +
+  geom_boxplot(position = position_dodge(width = 0.8), width = 0.6) +
+  labs(x = "Fréquentation par les cervidés", 
+       y = "Indice de Shannon (strate herbacée)",
+       fill = "") +
+  scale_fill_manual(values = c("graminoides" = "#7CAE00",
+                               "ligneux_herba" = "#8B4513",
+                               "dicot_pteri" = "#00BFC4"),
+                    limits = c("graminoides", "ligneux_herba", "dicot_pteri"),
+                    labels = c("graminoides" = "Graminoïdes",
+                               "ligneux_herba" = "Ligneux",
+                               "dicot_pteri" = "Autres herbacées")) +
+  scale_x_discrete(labels = c("Fréquentation faible" = "Faible",
+                              "Fréquentation moyenne" = "Moyenne",
+                              "Fréquentation forte" = "Forte")) +
+  theme_classic() +
+  theme(text = element_text(family = "serif", size = taille_texte),
+        axis.title = element_text(size = taille_texte + 2),
+        axis.text = element_text(size = taille_texte),
+        legend.text = element_text(size = taille_texte))
+
+p2 <- ggplot(info_placette_diversite, aes(x = factor(FREQ_CERF), y = shannon_H_arbu)) +
+  geom_boxplot(fill = "#8B4513", width = 0.6) +
+  labs(x = "Fréquentation par les cervidés", y = "Indice de Shannon (strate arbustive") +
+  scale_x_discrete(labels = c("Fréquentation faible" = "Faible",
+                              "Fréquentation moyenne" = "Moyenne",
+                              "Fréquentation forte" = "Forte")) +
+  theme_classic() +
+  theme(text = element_text(family = "serif", size = taille_texte),
+        axis.title = element_text(size = taille_texte + 2),
+        axis.text = element_text(size = taille_texte))
+
+# Extraction de la légende unique depuis p1
+legende_commune <- get_legend(
+  p1 + theme(legend.position = "right", legend.box.margin = margin(0, 0, 0, 12))
+)
+
+# Retirer les légendes individuelles des deux graphiques
+p1_sans_legende <- p1 + theme(legend.position = "none")
+p2_sans_legende <- p2 + theme(legend.position = "none")
+
+# Empiler p1 et p2 côte à côte
+graphiques_empiles <- plot_grid(p1_sans_legende, p2_sans_legende, 
+                                nrow = 1, align = "v", axis = "lr")
+
+# Ajouter la légende commune à droite de l'ensemble
+figure_finale <- plot_grid(graphiques_empiles, legende_commune, 
+                           ncol = 2, rel_widths = c(1, 0.25))
+
+figure_finale
+
+# Export en 300 dpi
+ggsave("../../../Figures/Analyses/Forêt/impacts_div_vegetation/shannon/shannon.png", plot = figure_finale, 
+       width = 12, height = 6, dpi = 300, units = "in")
+```
+
+```{r}
+taille_texte <- 16
+
+p1 <- ggplot(info_placette_shannon_long, 
+             aes(x = factor(FREQ_CERF2), y = shannon, fill = groupe)) +
+  geom_boxplot(position = position_dodge(width = 0.8), width = 0.6) +
+  labs(x = "Fréquentation par les cervidés", 
+       y = "Indice de Shannon (strate herbacée)",
+       fill = "") +
+  scale_fill_manual(values = c("graminoides" = "#7CAE00",
+                               "ligneux_herba" = "#8B4513",
+                               "dicot_pteri" = "#00BFC4"),
+                    limits = c("graminoides", "ligneux_herba", "dicot_pteri"),
+                    labels = c("graminoides" = "Graminoïdes",
+                               "ligneux_herba" = "Ligneux",
+                               "dicot_pteri" = "Autres herbacées")) +
+  theme_classic() +
+  theme(text = element_text(family = "serif", size = taille_texte),
+        axis.title = element_text(size = taille_texte + 2),
+        axis.text = element_text(size = taille_texte),
+        legend.text = element_text(size = taille_texte))
+
+p2 <- ggplot(info_placette_diversite, aes(x = factor(FREQ_CERF2), y = shannon_H_arbu)) +
+  geom_boxplot(fill = "#8B4513", width = 0.6) +
+  labs(x = "Fréquentation par les cervidés", y = "Indice de Shannon (strate arbustive") +
+  theme_classic() +
+  theme(text = element_text(family = "serif", size = taille_texte),
+        axis.title = element_text(size = taille_texte + 2),
+        axis.text = element_text(size = taille_texte))
+
+# Extraction de la légende unique depuis p1
+legende_commune <- get_legend(
+  p1 + theme(legend.position = "right", legend.box.margin = margin(0, 0, 0, 12))
+)
+
+# Retirer les légendes individuelles des deux graphiques
+p1_sans_legende <- p1 + theme(legend.position = "none")
+p2_sans_legende <- p2 + theme(legend.position = "none")
+
+# Empiler p1 et p2 côte à côte
+graphiques_empiles <- plot_grid(p1_sans_legende, p2_sans_legende, 
+                                nrow = 1, align = "v", axis = "lr")
+
+# Ajouter la légende commune à droite de l'ensemble
+figure_finale <- plot_grid(graphiques_empiles, legende_commune, 
+                           ncol = 2, rel_widths = c(1, 0.25))
+
+figure_finale
+
+# Export en 300 dpi
+ggsave("../../../Figures/Analyses/Forêt/impacts_div_vegetation/shannon/shannon_freq2.png", plot = figure_finale,
+       width = 12, height = 6, dpi = 300, units = "in")
+```
+
+
+```{r}
+#modeles stat
+
+#graminoides
+model_shannon_grami_feces <- lme(
+  shannon_graminoides ~ NB_FECES + REC_ARBO,
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI'),
+  random = ~1|ZONE2,
+  method = "REML"
+)
+summary(model_shannon_grami_feces)
+
+model_shannon_grami_feces2 <- lme(
+  shannon_graminoides ~ NB_FECES + I(NB_FECES^2) + REC_ARBO,
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI'),
+  random = ~1|ZONE2,
+  method = "REML"
+)
+summary(model_shannon_grami_feces2)
+
+model_shannon_grami_feces_het <- lme(
+  shannon_graminoides ~ NB_FECES + REC_ARBO,
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI' & UNI == 'HET'),
+  random = ~1|ZONE2,
+  method = "REML"
+)
+summary(model_shannon_grami_feces_het)
+
+model_shannon_grami_feces2_het <- lme(
+  shannon_graminoides ~ NB_FECES + I(NB_FECES^2) + REC_ARBO,
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI' & UNI == 'HET'),
+  random = ~1|ZONE2,
+  method = "REML"
+)
+summary(model_shannon_grami_feces2_het)
+
+model_shannon_grami_feces_feu <- lme(
+  shannon_graminoides ~ NB_FECES + REC_ARBO,
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI' & UNI == 'FEU'),
+  random = ~1|ZONE2,
+  method = "REML"
+)
+summary(model_shannon_grami_feces_feu)
+
+model_shannon_grami_feces2_feu <- lme(
+  shannon_graminoides ~ NB_FECES + I(NB_FECES^2) + REC_ARBO,
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI' & UNI == 'FEU'),
+  random = ~1|ZONE2,
+  method = "REML"
+)
+summary(model_shannon_grami_feces2_feu)
+
+
+#autres herbacées
+model_shannon_aherba_feces <- lme(
+  shannon_dicot_pteri ~ NB_FECES + REC_ARBO,
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI'),
+  random = ~1|ZONE2,
+  method = "REML"
+)
+summary(model_shannon_aherba_feces)
+
+model_shannon_aherba_feces2 <- lme(
+  shannon_dicot_pteri ~ NB_FECES + I(NB_FECES^2) + REC_ARBO,
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI'),
+  random = ~1|ZONE2,
+  method = "REML"
+)
+summary(model_shannon_aherba_feces2)
+
+model_shannon_aherba_feces_het <- lme(
+  shannon_dicot_pteri ~ NB_FECES + REC_ARBO,
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI' & UNI == 'HET'),
+  random = ~1|ZONE2,
+  method = "REML"
+)
+summary(model_shannon_aherba_feces_het)
+
+model_shannon_aherba_feces2_het <- lme(
+  shannon_dicot_pteri ~ NB_FECES + I(NB_FECES^2) + REC_ARBO,
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI' & UNI == 'HET'),
+  random = ~1|ZONE2,
+  method = "REML"
+)
+summary(model_shannon_aherba_feces2_het)
+
+model_shannon_aherba_feces_feu <- lme(
+  shannon_dicot_pteri ~ NB_FECES + REC_ARBO,
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI' & UNI == 'FEU'),
+  random = ~1|ZONE2,
+  method = "REML"
+)
+summary(model_shannon_aherba_feces_feu)
+
+model_shannon_aherba_feces2_feu <- lme(
+  shannon_dicot_pteri ~ NB_FECES + I(NB_FECES^2) + REC_ARBO,
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI' & UNI == 'FEU'),
+  random = ~1|ZONE2,
+  method = "REML"
+)
+summary(model_shannon_aherba_feces2_feu)
+
+
+#ligneux herbacés
+model_shannon_ligneuxh_feces <- lme(
+  shannon_ligneux_herba ~ NB_FECES + REC_ARBO,
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI'),
+  random = ~1|ZONE2,
+  method = "REML"
+)
+summary(model_shannon_ligneuxh_feces)
+
+model_shannon_ligneuxh_feces2 <- lme(
+  shannon_ligneux_herba ~ NB_FECES + I(NB_FECES^2) + REC_ARBO,
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI'),
+  random = ~1|ZONE2,
+  method = "REML"
+)
+summary(model_shannon_ligneuxh_feces2)
+
+model_shannon_ligneuxh_feces_het <- lme(
+  shannon_ligneux_herba ~ NB_FECES + REC_ARBO,
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI' & UNI == 'HET'),
+  random = ~1|ZONE2,
+  method = "REML"
+)
+summary(model_shannon_ligneuxh_feces_het)
+
+model_shannon_ligneuxh_feces2_het <- lme(
+  shannon_ligneux_herba ~ NB_FECES + I(NB_FECES^2) + REC_ARBO,
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI' & UNI == 'HET'),
+  random = ~1|ZONE2,
+  method = "REML"
+)
+summary(model_shannon_ligneuxh_feces2_het)
+
+model_shannon_ligneuxh_feces_feu <- lme(
+  shannon_ligneux_herba ~ NB_FECES + REC_ARBO,
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI' & UNI == 'FEU'),
+  random = ~1|ZONE2,
+  method = "REML"
+)
+summary(model_shannon_ligneuxh_feces_feu)
+
+model_shannon_ligneuxh_feces2_feu <- lme(
+  shannon_ligneux_herba ~ NB_FECES + I(NB_FECES^2) + REC_ARBO,
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI' & UNI == 'FEU'),
+  random = ~1|ZONE2,
+  method = "REML"
+)
+summary(model_shannon_ligneuxh_feces2_feu)
+
+#strate arbustive
+model_shannon_arbu_feces <- lme(
+  shannon_H_arbu ~ NB_FECES + REC_ARBO,
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI'),
+  random = ~1|ZONE2,
+  method = "REML"
+)
+summary(model_shannon_arbu_feces)
+
+model_shannon_arbu_feces2 <- lme(
+  shannon_H_arbu ~ NB_FECES + I(NB_FECES^2) + REC_ARBO,
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI'),
+  random = ~1|ZONE2,
+  method = "REML"
+)
+summary(model_shannon_arbu_feces2)
+
+model_shannon_arbu_feces_het <- lme(
+  shannon_H_arbu ~ NB_FECES + REC_ARBO,
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI' & UNI == 'HET'),
+  random = ~1|ZONE2,
+  method = "REML"
+)
+summary(model_shannon_arbu_feces_het)
+
+model_shannon_arbu_feces2_het <- lme(
+  shannon_H_arbu ~ NB_FECES + I(NB_FECES^2) + REC_ARBO,
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI' & UNI == 'HET'),
+  random = ~1|ZONE2,
+  method = "REML"
+)
+summary(model_shannon_arbu_feces2_het)
+
+model_shannon_arbu_feces_feu <- lme(
+  shannon_H_arbu ~ NB_FECES + REC_ARBO,
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI' & UNI == 'FEU'),
+  random = ~1|ZONE2,
+  method = "REML"
+)
+summary(model_shannon_arbu_feces_feu)
+
+model_shannon_arbu_feces2_feu <- lme(
+  shannon_H_arbu ~ NB_FECES + I(NB_FECES^2) + REC_ARBO,
+  data = info_placette_diversite %>%
+    filter(REAL_PHYTO == 'OUI' & UNI == 'FEU'),
+  random = ~1|ZONE2,
+  method = "REML"
+)
+summary(model_shannon_arbu_feces2_feu)
+
+#on vérifie avec l'abroutissement moyen
+model_shannon_ligneuxh_abrou_feu <- lme(
+  shannon_ligneux_herba ~ AMOYj  + REC_ARBO,
+  data = info_placette_aldous_diversite %>%
+    filter(REAL_PHYTO == 'OUI' & UNI == 'FEU'),
+  random = ~1|ZONE2,
+  method = "REML"
+)
+summary(model_shannon_ligneuxh_abrou_feu)
+
+model_shannon_ligneuxh_abrou2_feu <- lme(
+  shannon_ligneux_herba ~ AMOYj + I(AMOYj^2) + REC_ARBO,
+  data = info_placette_aldous_diversite %>%
+    filter(REAL_PHYTO == 'OUI' & UNI == 'FEU'),
+  random = ~1|ZONE2,
+  method = "REML"
+)
+summary(model_shannon_ligneuxh_abrou2_feu)
+
+model_shannon_arbu_abrou2_feu <- lme(
+  shannon_H_arbu ~ AMOYj + I(AMOYj^2) + REC_ARBO,
+  data = info_placette_aldous_diversite %>%
+    filter(REAL_PHYTO == 'OUI' & UNI == 'FEU'),
+  random = ~1|ZONE2,
+  method = "REML"
+)
+summary(model_shannon_arbu_abrou2_feu)
 ```
 
 # Relation entre abroutissement et richesse/diversité
